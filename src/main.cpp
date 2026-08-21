@@ -110,7 +110,7 @@ void ToggleRecording() {
         return;
     }
 
-    SetStatus(L"● RECORDING  |  " + std::to_wstring(config.maxWidth) + L"x" +
+    SetStatus(L"RECORDING  |  " + std::to_wstring(config.maxWidth) + L"x" +
               std::to_wstring(config.maxHeight) + L"  |  " + std::to_wstring(config.fps) +
               L" FPS  |  " + g_recorder.EncoderName());
     SetWindowTextW(g_start, L"Stop Recording  (F8)");
@@ -121,18 +121,18 @@ void OpenRecordings(HWND hwnd) {
     ShellExecuteW(hwnd, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
-LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM) {
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CREATE: {
         CreateWindowW(L"STATIC", L"RECORDER", WS_CHILD | WS_VISIBLE, 24, 18, 180, 30,
                       hwnd, nullptr, nullptr, nullptr);
         g_status = CreateWindowW(L"STATIC", L"READY  |  Press F8 to record Minecraft",
-            WS_CHILD | WS_VISIBLE, 24, 52, 500, 28, hwnd, (HMENU)ID_STATUS, nullptr, nullptr);
+            WS_CHILD | WS_VISIBLE, 24, 52, 500, 28, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_STATUS)), nullptr, nullptr);
 
         CreateWindowW(L"STATIC", L"FPS", WS_CHILD | WS_VISIBLE, 24, 94, 45, 22,
                       hwnd, nullptr, nullptr, nullptr);
         g_fps = CreateWindowW(L"COMBOBOX", L"30", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
-            68, 90, 90, 120, hwnd, (HMENU)ID_FPS, nullptr, nullptr);
+            68, 90, 90, 120, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_FPS)), nullptr, nullptr);
         SendMessageW(g_fps, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"30"));
         SendMessageW(g_fps, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"60"));
         SendMessageW(g_fps, CB_SETCURSEL, 0, 0);
@@ -140,26 +140,26 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM) {
         CreateWindowW(L"STATIC", L"Quality", WS_CHILD | WS_VISIBLE, 176, 94, 55, 22,
                       hwnd, nullptr, nullptr, nullptr);
         g_quality = CreateWindowW(L"COMBOBOX", L"26", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
-            234, 90, 100, 120, hwnd, (HMENU)ID_QUALITY, nullptr, nullptr);
+            234, 90, 100, 120, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_QUALITY)), nullptr, nullptr);
         SendMessageW(g_quality, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"22"));
         SendMessageW(g_quality, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"26"));
         SendMessageW(g_quality, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"30"));
         SendMessageW(g_quality, CB_SETCURSEL, 1, 0);
 
         g_cursor = CreateWindowW(L"BUTTON", L"Capture cursor", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-            350, 92, 125, 24, hwnd, (HMENU)ID_CURSOR, nullptr, nullptr);
+            350, 92, 125, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_CURSOR)), nullptr, nullptr);
         SendMessageW(g_cursor, BM_SETCHECK, BST_CHECKED, 0);
 
         g_start = CreateWindowW(L"BUTTON", L"Start Recording  (F8)",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 24, 132, 220, 40, hwnd,
-            (HMENU)ID_START, nullptr, nullptr);
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_START)), nullptr, nullptr);
         CreateWindowW(L"BUTTON", L"Open Recordings",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 254, 132, 180, 40, hwnd,
-            (HMENU)ID_OPEN, nullptr, nullptr);
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_OPEN)), nullptr, nullptr);
 
         g_info = CreateWindowW(L"STATIC",
             L"Low-end mode: 720p target | 30 FPS default | Intel Quick Sync preferred",
-            WS_CHILD | WS_VISIBLE, 24, 184, 500, 24, hwnd, (HMENU)ID_INFO, nullptr, nullptr);
+            WS_CHILD | WS_VISIBLE, 24, 184, 500, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_INFO)), nullptr, nullptr);
 
         RegisterHotKey(hwnd, HOTKEY_ID, 0, VK_F8);
         return 0;
