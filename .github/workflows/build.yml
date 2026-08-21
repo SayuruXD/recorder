@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
@@ -12,14 +13,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure
-        run: cmake -S . -B build -A x64
+      - name: Configure Release
+        run: cmake -S . -B build -A x64 -DCMAKE_BUILD_TYPE=Release
 
-      - name: Build
+      - name: Build Release
         run: cmake --build build --config Release --parallel
 
-      - name: Upload executable
+      - name: Prepare portable package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item build/Release/Recorder.exe package/Recorder.exe
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-extracted -Force
+          $ffmpeg = Get-ChildItem ffmpeg-extracted -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          Copy-Item $ffmpeg.FullName package/ffmpeg.exe
+          @"
+          Recorder portable build
+
+          Put Recorder.exe and ffmpeg.exe in the same folder.
+          Start Recorder, launch Minecraft, then press F8.
+          Recordings are saved to Documents\\Recorder.
+          "@ | Set-Content package/README.txt
+
+      - name: Upload portable package
         uses: actions/upload-artifact@v4
         with:
-          name: Recorder-windows-x64
-          path: build/Release/Recorder.exe
+          name: Recorder-windows-x64-portable
+          path: package
