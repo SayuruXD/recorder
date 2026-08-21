@@ -110,8 +110,8 @@ bool Recorder::LaunchEncoder(HWND targetWindow, const std::wstring& outputPath,
     int height = std::max(2L, r.bottom - r.top) & ~1;
 
     // Keep capture on the GPU. If the Minecraft window is larger than the low-end
-    // target, capture a centered 16:9 region at the target size instead of scaling
-    // every frame on the Pentium CPU.
+    // target, capture a centered region at the target size instead of scaling every
+    // frame on the Pentium CPU.
     if (config.maxWidth > 0 && config.maxHeight > 0 &&
         width >= config.maxWidth && height >= config.maxHeight) {
         const int targetW = config.maxWidth & ~1;
@@ -131,7 +131,7 @@ bool Recorder::LaunchEncoder(HWND targetWindow, const std::wstring& outputPath,
 
     std::wstringstream cmd;
     cmd << Quote(ffmpeg)
-        << L" -hide_banner -loglevel error -nostdin -y"
+        << L" -hide_banner -loglevel error -y"
         << L" -f lavfi -i " << Quote(input)
         << L" -an";
 
@@ -166,9 +166,8 @@ bool Recorder::Start(HWND targetWindow, const std::wstring& outputPath,
         return false;
     }
 
-    // QSV is the preferred path for Intel integrated graphics. If the installed
-    // FFmpeg build lacks h264_qsv, the process exits immediately and we retry with
-    // a deliberately small CPU encoder footprint.
+    // QSV is preferred for Intel integrated graphics. If the installed FFmpeg
+    // build cannot initialize h264_qsv/ddagrab, retry with a small CPU footprint.
     if (LaunchEncoder(targetWindow, outputPath, config, true)) {
         Sleep(250);
         if (IsProcessAlive()) return true;
@@ -188,7 +187,7 @@ bool Recorder::Start(HWND targetWindow, const std::wstring& outputPath,
 void Recorder::Stop() {
     if (!process_) return;
 
-    // FFmpeg's stdin accepts 'q' and finalizes the MP4 container cleanly.
+    // FFmpeg accepts 'q' on stdin and finalizes the MP4 container cleanly.
     if (stdinWrite_) {
         const char quit = 'q';
         DWORD written = 0;
