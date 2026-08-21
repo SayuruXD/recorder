@@ -5,6 +5,7 @@
 
 class Recorder {
 public:
+    ~Recorder();
     bool Start(HWND minecraftWindow, const std::wstring& outputPath, int fps = 30, int maxWidth = 1280);
     void Stop();
     bool IsRecording() const { return process_ != nullptr; }
@@ -12,5 +13,6 @@ public:
 
 private:
     HANDLE process_ = nullptr;
+    HANDLE stdinWrite_ = nullptr;
     std::wstring lastError_;
 };
