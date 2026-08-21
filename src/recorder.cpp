@@ -20,28 +20,26 @@ std::wstring Quote(const std::wstring& value) {
 std::wstring FindFfmpeg(std::wstring& detail) {
     wchar_t modulePath[MAX_PATH]{};
     const DWORD length = GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
-    if (length == 0) {
+    if (length == 0 || length >= MAX_PATH) {
         detail = L"Could not locate Recorder.exe.";
         return {};
     }
 
-    std::filesystem::path exe(modulePath);
+    const std::filesystem::path exe(modulePath);
     const auto local = exe.parent_path() / L"ffmpeg.exe";
     if (std::filesystem::exists(local)) {
-        detail = L"Using bundled FFmpeg: " + local.wstring();
+        detail = L"Using bundled FFmpeg.";
         return local.wstring();
     }
 
-    // Also allow FFmpeg installed on PATH. CreateProcess cannot reliably resolve
-    // a relative executable with a quoted command line, so resolve it explicitly.
     wchar_t resolved[MAX_PATH]{};
     const DWORD n = SearchPathW(nullptr, L"ffmpeg.exe", nullptr, MAX_PATH, resolved, nullptr);
     if (n > 0 && n < MAX_PATH) {
-        detail = L"Using FFmpeg from PATH: " + std::wstring(resolved);
+        detail = L"Using FFmpeg from PATH.";
         return std::wstring(resolved);
     }
 
-    detail = L"FFmpeg was not found beside Recorder.exe or on PATH. Expected: " + local.wstring();
+    detail = L"FFmpeg was not found beside Recorder.exe. Keep ffmpeg.exe in the same folder.";
     return {};
 }
 
@@ -56,6 +54,12 @@ std::wstring BuildCaptureInput(const RECT& r, int fps, bool cursor) {
     return s.str();
 }
 
+HANDLE OpenNulHandle() {
+    return CreateFileW(L"NUL", GENERIC_WRITE,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE,
+                       nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+}
+
 } // namespace
 
 Recorder::~Recorder() { Stop(); }
@@ -63,7 +67,8 @@ Recorder::~Recorder() { Stop(); }
 bool Recorder::IsProcessAlive() const {
     if (!process_) return false;
     DWORD code = 0;
-    return GetExitCodeProcess(process_, &code) && code == STILL_ACTIVE;
+    if (!GetExitCodeProcess(process_, &code)) return false;
+    return code == STILL_ACTIVE;
 }
 
 void Recorder::CloseProcessHandles() {
@@ -85,17 +90,28 @@ bool Recorder::Launch(const std::wstring& commandLine) {
     HANDLE stdinRead = nullptr;
     HANDLE stdinWrite = nullptr;
     if (!CreatePipe(&stdinRead, &stdinWrite, &sa, 0)) {
-        lastError_ = L"Could not create FFmpeg control pipe.";
+        lastError_ = L"Could not create the FFmpeg control pipe.";
         return false;
     }
     SetHandleInformation(stdinWrite, HANDLE_FLAG_INHERIT, 0);
+
+    HANDLE nulOut = OpenNulHandle();
+    HANDLE nulErr = OpenNulHandle();
+    if (nulOut == INVALID_HANDLE_VALUE || nulErr == INVALID_HANDLE_VALUE) {
+        if (nulOut != INVALID_HANDLE_VALUE) CloseHandle(nulOut);
+        if (nulErr != INVALID_HANDLE_VALUE) CloseHandle(nulErr);
+        CloseHandle(stdinRead);
+        CloseHandle(stdinWrite);
+        lastError_ = L"Could not prepare FFmpeg output handles.";
+        return false;
+    }
 
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESTDHANDLES;
     si.hStdInput = stdinRead;
-    si.hStdOutput = INVALID_HANDLE_VALUE;
-    si.hStdError = INVALID_HANDLE_VALUE;
+    si.hStdOutput = nulOut;
+    si.hStdError = nulErr;
 
     PROCESS_INFORMATION pi{};
     std::vector<wchar_t> buffer(commandLine.begin(), commandLine.end());
@@ -104,7 +120,10 @@ bool Recorder::Launch(const std::wstring& commandLine) {
     const BOOL ok = CreateProcessW(nullptr, buffer.data(), nullptr, nullptr, TRUE,
                                    CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS,
                                    nullptr, nullptr, &si, &pi);
+
     CloseHandle(stdinRead);
+    CloseHandle(nulOut);
+    CloseHandle(nulErr);
 
     if (!ok) {
         const DWORD error = GetLastError();
@@ -121,9 +140,14 @@ bool Recorder::Launch(const std::wstring& commandLine) {
 
 bool Recorder::LaunchEncoder(HWND targetWindow, const std::wstring& outputPath,
                              const RecordingConfig& config, bool qsv) {
+    if (IsIconic(targetWindow)) {
+        lastError_ = L"Minecraft is minimized. Restore the game before recording.";
+        return false;
+    }
+
     RECT r{};
-    if (!GetWindowRect(targetWindow, &r)) {
-        lastError_ = L"Could not read Minecraft window bounds.";
+    if (!GetWindowRect(targetWindow, &r) || r.right <= r.left || r.bottom <= r.top) {
+        lastError_ = L"Could not read the Minecraft window bounds.";
         return false;
     }
 
@@ -143,6 +167,10 @@ bool Recorder::LaunchEncoder(HWND targetWindow, const std::wstring& outputPath,
     std::filesystem::path out(outputPath);
     std::error_code ec;
     if (!out.parent_path().empty()) std::filesystem::create_directories(out.parent_path(), ec);
+    if (ec) {
+        lastError_ = L"Could not create the recordings folder.";
+        return false;
+    }
 
     std::wstring ffmpegDetail;
     const std::wstring ffmpeg = FindFfmpeg(ffmpegDetail);
@@ -190,21 +218,21 @@ bool Recorder::Start(HWND targetWindow, const std::wstring& outputPath,
         return false;
     }
 
-    // Prefer Intel Quick Sync. If it cannot initialize, try the low-thread CPU fallback.
     if (LaunchEncoder(targetWindow, outputPath, config, true)) {
-        Sleep(250);
+        Sleep(300);
         if (IsProcessAlive()) return true;
         CloseProcessHandles();
     }
 
+    const std::wstring qsvError = lastError_;
     if (LaunchEncoder(targetWindow, outputPath, config, false)) {
-        Sleep(250);
+        Sleep(300);
         if (IsProcessAlive()) return true;
         CloseProcessHandles();
     }
 
-    if (lastError_.empty()) {
-        lastError_ = L"FFmpeg exited immediately. Check that your bundled FFmpeg supports ddagrab and H.264.";
+    if (lastError_.empty() || lastError_ == qsvError) {
+        lastError_ = L"FFmpeg could not start recording. Make sure the portable package contains ffmpeg.exe.";
     }
     return false;
 }
