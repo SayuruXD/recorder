@@ -17,13 +17,32 @@ std::wstring Quote(const std::wstring& value) {
     return out;
 }
 
-std::wstring FindFfmpeg() {
+std::wstring FindFfmpeg(std::wstring& detail) {
     wchar_t modulePath[MAX_PATH]{};
-    GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
+    const DWORD length = GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
+    if (length == 0) {
+        detail = L"Could not locate Recorder.exe.";
+        return {};
+    }
+
     std::filesystem::path exe(modulePath);
     const auto local = exe.parent_path() / L"ffmpeg.exe";
-    if (std::filesystem::exists(local)) return local.wstring();
-    return L"ffmpeg.exe";
+    if (std::filesystem::exists(local)) {
+        detail = L"Using bundled FFmpeg: " + local.wstring();
+        return local.wstring();
+    }
+
+    // Also allow FFmpeg installed on PATH. CreateProcess cannot reliably resolve
+    // a relative executable with a quoted command line, so resolve it explicitly.
+    wchar_t resolved[MAX_PATH]{};
+    const DWORD n = SearchPathW(nullptr, L"ffmpeg.exe", nullptr, MAX_PATH, resolved, nullptr);
+    if (n > 0 && n < MAX_PATH) {
+        detail = L"Using FFmpeg from PATH: " + std::wstring(resolved);
+        return std::wstring(resolved);
+    }
+
+    detail = L"FFmpeg was not found beside Recorder.exe or on PATH. Expected: " + local.wstring();
+    return {};
 }
 
 std::wstring BuildCaptureInput(const RECT& r, int fps, bool cursor) {
@@ -88,7 +107,9 @@ bool Recorder::Launch(const std::wstring& commandLine) {
     CloseHandle(stdinRead);
 
     if (!ok) {
+        const DWORD error = GetLastError();
         CloseHandle(stdinWrite);
+        lastError_ = L"Windows could not start FFmpeg (error " + std::to_wstring(error) + L").";
         return false;
     }
 
@@ -109,9 +130,6 @@ bool Recorder::LaunchEncoder(HWND targetWindow, const std::wstring& outputPath,
     int width = std::max(2L, r.right - r.left) & ~1;
     int height = std::max(2L, r.bottom - r.top) & ~1;
 
-    // Keep capture on the GPU. If the Minecraft window is larger than the low-end
-    // target, capture a centered region at the target size instead of scaling every
-    // frame on the Pentium CPU.
     if (config.maxWidth > 0 && config.maxHeight > 0 &&
         width >= config.maxWidth && height >= config.maxHeight) {
         const int targetW = config.maxWidth & ~1;
@@ -126,7 +144,13 @@ bool Recorder::LaunchEncoder(HWND targetWindow, const std::wstring& outputPath,
     std::error_code ec;
     if (!out.parent_path().empty()) std::filesystem::create_directories(out.parent_path(), ec);
 
-    const std::wstring ffmpeg = FindFfmpeg();
+    std::wstring ffmpegDetail;
+    const std::wstring ffmpeg = FindFfmpeg(ffmpegDetail);
+    if (ffmpeg.empty()) {
+        lastError_ = ffmpegDetail;
+        return false;
+    }
+
     const std::wstring input = BuildCaptureInput(r, config.fps, config.captureCursor);
 
     std::wstringstream cmd;
@@ -166,8 +190,7 @@ bool Recorder::Start(HWND targetWindow, const std::wstring& outputPath,
         return false;
     }
 
-    // QSV is preferred for Intel integrated graphics. If the installed FFmpeg
-    // build cannot initialize h264_qsv/ddagrab, retry with a small CPU footprint.
+    // Prefer Intel Quick Sync. If it cannot initialize, try the low-thread CPU fallback.
     if (LaunchEncoder(targetWindow, outputPath, config, true)) {
         Sleep(250);
         if (IsProcessAlive()) return true;
@@ -180,14 +203,15 @@ bool Recorder::Start(HWND targetWindow, const std::wstring& outputPath,
         CloseProcessHandles();
     }
 
-    lastError_ = L"FFmpeg could not start. Make sure ffmpeg.exe is beside Recorder.exe.";
+    if (lastError_.empty()) {
+        lastError_ = L"FFmpeg exited immediately. Check that your bundled FFmpeg supports ddagrab and H.264.";
+    }
     return false;
 }
 
 void Recorder::Stop() {
     if (!process_) return;
 
-    // FFmpeg accepts 'q' on stdin and finalizes the MP4 container cleanly.
     if (stdinWrite_) {
         const char quit = 'q';
         DWORD written = 0;
