@@ -24,23 +24,23 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path package | Out-Null
+          New-Item -ItemType Directory -Force -Path package/assets | Out-Null
           Copy-Item build/Release/Recorder.exe package/Recorder.exe
+          Copy-Item assets/minecraft_bg.jpg package/assets/minecraft_bg.jpg
           Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ffmpeg.zip
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-extracted -Force
           $ffmpeg = Get-ChildItem ffmpeg-extracted -Recurse -Filter ffmpeg.exe | Select-Object -First 1
-          if (-not $ffmpeg) { throw 'FFmpeg executable was not found.' }
+          if (-not $ffmpeg) { throw 'Bundled FFmpeg executable was not found.' }
           Copy-Item $ffmpeg.FullName package/ffmpeg.exe
           $filters = & $ffmpeg.FullName -hide_banner -filters 2>&1 | Out-String
           if ($filters -notmatch 'ddagrab') { throw 'Bundled FFmpeg does not contain ddagrab.' }
           @"
           Recorder portable package
-          Keep Recorder.exe and ffmpeg.exe together.
+          Keep Recorder.exe, ffmpeg.exe and the assets folder together.
           Start Minecraft, open Recorder, then press F8.
           Default: low-end 720p at 30 FPS.
           Recordings: Documents\Recorder
           "@ | Set-Content package/README.txt
-
-          # One ZIP is uploaded, so the user downloads only one file.
           Compress-Archive -Path package/* -DestinationPath Recorder-windows-x64.zip -Force
 
       - name: Upload one download
