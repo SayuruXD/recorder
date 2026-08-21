@@ -19,38 +19,33 @@ jobs:
       - name: Build Release
         run: cmake --build build --config Release --parallel
 
-      - name: Prepare portable package
+      - name: Prepare single portable download
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path package | Out-Null
           Copy-Item build/Release/Recorder.exe package/Recorder.exe
-
-          # Use the current Windows essentials build and verify the exact executable.
           Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ffmpeg.zip
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-extracted -Force
           $ffmpeg = Get-ChildItem ffmpeg-extracted -Recurse -Filter ffmpeg.exe | Select-Object -First 1
-          if (-not $ffmpeg) { throw 'FFmpeg executable was not found in downloaded archive.' }
+          if (-not $ffmpeg) { throw 'FFmpeg executable was not found.' }
           Copy-Item $ffmpeg.FullName package/ffmpeg.exe
-
-          # Fail the CI job if the downloaded FFmpeg cannot provide the capture/encoder
-          # features the recorder relies on. This prevents a broken artifact from reaching you.
-          $features = & $ffmpeg.FullName -hide_banner -filters 2>&1 | Out-String
-          if ($features -notmatch 'ddagrab') { throw 'Bundled FFmpeg does not contain ddagrab.' }
-          $encoders = & $ffmpeg.FullName -hide_banner -encoders 2>&1 | Out-String
-          if ($encoders -notmatch 'h264_qsv') { Write-Warning 'Bundled FFmpeg does not list h264_qsv; CPU fallback remains available.' }
-
+          $filters = & $ffmpeg.FullName -hide_banner -filters 2>&1 | Out-String
+          if ($filters -notmatch 'ddagrab') { throw 'Bundled FFmpeg does not contain ddagrab.' }
           @"
-          Recorder portable build
-
-          Keep Recorder.exe and ffmpeg.exe in the same folder.
-          Start Recorder, launch Minecraft, then press F8.
-          Default profile: 1280x720, 30 FPS, Intel Quick Sync preferred.
-          Recordings are saved to Documents\\Recorder.
+          Recorder portable package
+          Keep Recorder.exe and ffmpeg.exe together.
+          Start Minecraft, open Recorder, then press F8.
+          Default: low-end 720p at 30 FPS.
+          Recordings: Documents\Recorder
           "@ | Set-Content package/README.txt
 
-      - name: Upload portable package
+          # One ZIP is uploaded, so the user downloads only one file.
+          Compress-Archive -Path package/* -DestinationPath Recorder-windows-x64.zip -Force
+
+      - name: Upload one download
         uses: actions/upload-artifact@v4
         with:
-          name: Recorder-windows-x64-portable
-          path: package
+          name: Recorder-windows-x64
+          path: Recorder-windows-x64.zip
+          if-no-files-found: error
