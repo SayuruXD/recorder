@@ -28,7 +28,6 @@ private:
     bool LaunchEncoder(HWND targetWindow, const std::wstring& outputPath, const RecordingConfig& config, bool qsv);
     bool IsProcessAlive() const;
     void CloseProcessHandles();
-    std::wstring FindFfmpeg(std::wstring& detail) const;
 
     HANDLE process_ = nullptr;
     HANDLE stdinWrite_ = nullptr;
