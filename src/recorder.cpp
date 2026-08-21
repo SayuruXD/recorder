@@ -89,36 +89,66 @@ bool Recorder::Launch(const std::wstring& commandLine) {
 bool Recorder::LaunchEncoder(HWND targetWindow, const std::wstring& outputPath,
                              const RecordingConfig& config, bool qsv) {
     (void)qsv;
-    if (IsIconic(targetWindow)) { lastError_ = L"Minecraft is minimized. Restore the game before recording."; return false; }
+    if (!targetWindow) { lastError_ = L"No capture source was selected."; return false; }
+
+    const bool fullScreen = targetWindow == GetDesktopWindow();
+    if (!fullScreen && IsIconic(targetWindow)) {
+        lastError_ = L"Minecraft is minimized. Restore the game before recording.";
+        return false;
+    }
+
     RECT r{};
     if (!GetWindowRect(targetWindow, &r) || r.right <= r.left || r.bottom <= r.top) {
-        lastError_ = L"Could not read the Minecraft window bounds."; return false;
+        lastError_ = fullScreen ? L"Could not read the desktop screen bounds." : L"Could not read the Minecraft window bounds.";
+        return false;
     }
+
     int width = std::max(2L, r.right - r.left) & ~1;
     int height = std::max(2L, r.bottom - r.top) & ~1;
+
+    // For a full-screen recording we preserve the entire screen. If it is larger
+    // than the low-end target, scale the complete frame down instead of cropping it.
+    int outputWidth = width;
+    int outputHeight = height;
     if (config.maxWidth > 0 && config.maxHeight > 0 && (width > config.maxWidth || height > config.maxHeight)) {
         const double scale = std::min(static_cast<double>(config.maxWidth) / width,
                                       static_cast<double>(config.maxHeight) / height);
-        const int targetW = std::max(2, static_cast<int>(width * scale)) & ~1;
-        const int targetH = std::max(2, static_cast<int>(height * scale)) & ~1;
-        r.left += (width - targetW) / 2; r.top += (height - targetH) / 2;
-        r.right = r.left + targetW; r.bottom = r.top + targetH; width = targetW; height = targetH;
+        outputWidth = std::max(2, static_cast<int>(width * scale)) & ~1;
+        outputHeight = std::max(2, static_cast<int>(height * scale)) & ~1;
+        if (!fullScreen) {
+            r.left += (width - outputWidth) / 2;
+            r.top += (height - outputHeight) / 2;
+            r.right = r.left + outputWidth;
+            r.bottom = r.top + outputHeight;
+            width = outputWidth;
+            height = outputHeight;
+        }
     }
+
     std::filesystem::path out(outputPath); std::error_code ec;
     if (!out.parent_path().empty()) std::filesystem::create_directories(out.parent_path(), ec);
     if (ec) { lastError_ = L"Could not create the recordings folder."; return false; }
+
     std::wstring detail; const std::wstring ffmpeg = FindFfmpeg(detail);
     if (ffmpeg.empty()) { lastError_ = detail; return false; }
+
     const std::wstring input = BuildCaptureInput(r, config.fps, config.captureCursor);
+    std::wstringstream videoFilter;
+    videoFilter << L"hwdownload,format=bgra";
+    if (outputWidth != width || outputHeight != height) {
+        videoFilter << L",scale=" << outputWidth << L":" << outputHeight << L":flags=fast_bilinear";
+    }
+    videoFilter << L",format=yuv420p";
+
     std::wstringstream cmd;
     cmd << Quote(ffmpeg) << L" -hide_banner -loglevel error -y -f lavfi -i " << Quote(input)
-        << L" -vf " << Quote(L"hwdownload,format=bgra,scale=" + std::to_wstring(width) + L":" +
-                              std::to_wstring(height) + L":flags=fast_bilinear,format=yuv420p")
+        << L" -vf " << Quote(videoFilter.str())
         << L" -an -r " << std::clamp(config.fps, 15, 60)
         << L" -c:v libx264 -preset ultrafast -tune zerolatency"
         << L" -crf " << std::clamp(config.quality + 2, 20, 32)
         << L" -threads 2 -bf 0 -g " << std::clamp(config.fps * 2, 30, 120)
         << L" -pix_fmt yuv420p -movflags +faststart -f mp4 " << Quote(out.wstring());
+
     encoderName_ = L"H.264 low-end compatibility mode";
     return Launch(cmd.str());
 }
@@ -126,7 +156,7 @@ bool Recorder::LaunchEncoder(HWND targetWindow, const std::wstring& outputPath,
 bool Recorder::Start(HWND targetWindow, const std::wstring& outputPath, const RecordingConfig& config) {
     lastError_.clear(); encoderName_.clear();
     if (IsRecording()) { lastError_ = L"A recording is already running."; return false; }
-    if (!IsWindow(targetWindow)) { lastError_ = L"Minecraft window was not found."; return false; }
+    if (!IsWindow(targetWindow)) { lastError_ = L"Capture source was not found."; return false; }
     if (LaunchEncoder(targetWindow, outputPath, config, false)) {
         Sleep(500);
         if (IsProcessAlive()) return true;
