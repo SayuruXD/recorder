@@ -22,7 +22,7 @@ std::wstring FindFfmpeg(std::wstring& detail) {
     wchar_t resolved[MAX_PATH]{};
     const DWORD n = SearchPathW(nullptr, L"ffmpeg.exe", nullptr, MAX_PATH, resolved, nullptr);
     if (n && n < MAX_PATH) { detail = L"Using FFmpeg from PATH."; return resolved; }
-    detail = L"FFmpeg was not found beside Recorder.exe. Keep ffmpeg.exe in the same folder.";
+    detail = L"FFmpeg was not found beside Recorder.exe.";
     return {};
 }
 
@@ -89,55 +89,43 @@ bool Recorder::Launch(const std::wstring& commandLine) {
 bool Recorder::LaunchEncoder(const RECT& captureRect, const std::wstring& outputPath,
                              const RecordingConfig& config) {
     RECT r = captureRect;
-    if (r.right <= r.left || r.bottom <= r.top) {
-        lastError_ = L"The selected capture region is invalid.";
-        return false;
-    }
-
+    if (r.right <= r.left || r.bottom <= r.top) { lastError_ = L"The selected capture region is invalid."; return false; }
     int width = std::max(2L, r.right - r.left) & ~1;
     int height = std::max(2L, r.bottom - r.top) & ~1;
-    int outputWidth = width;
-    int outputHeight = height;
-
+    int outputWidth = width, outputHeight = height;
     if (config.maxWidth > 0 && config.maxHeight > 0 && (width > config.maxWidth || height > config.maxHeight)) {
         const double scale = std::min(static_cast<double>(config.maxWidth) / width,
                                       static_cast<double>(config.maxHeight) / height);
         outputWidth = std::max(2, static_cast<int>(width * scale)) & ~1;
         outputHeight = std::max(2, static_cast<int>(height * scale)) & ~1;
     }
-
     std::filesystem::path out(outputPath); std::error_code ec;
     if (!out.parent_path().empty()) std::filesystem::create_directories(out.parent_path(), ec);
     if (ec) { lastError_ = L"Could not create the recordings folder."; return false; }
-
     std::wstring detail; const std::wstring ffmpeg = FindFfmpeg(detail);
     if (ffmpeg.empty()) { lastError_ = detail; return false; }
 
     const std::wstring input = BuildCaptureInput(r, config.fps, config.captureCursor);
     std::wstringstream videoFilter;
     videoFilter << L"hwdownload,format=bgra";
-    if (outputWidth != width || outputHeight != height) {
+    if (outputWidth != width || outputHeight != height)
         videoFilter << L",scale=" << outputWidth << L":" << outputHeight << L":flags=fast_bilinear";
-    }
     videoFilter << L",format=yuv420p";
 
     std::wstringstream cmd;
     cmd << Quote(ffmpeg) << L" -hide_banner -loglevel error -y -f lavfi -i " << Quote(input)
-        << L" -vf " << Quote(videoFilter.str())
-        << L" -an -r " << std::clamp(config.fps, 15, 60)
+        << L" -vf " << Quote(videoFilter.str()) << L" -an -r " << std::clamp(config.fps, 15, 60)
         << L" -c:v libx264 -preset ultrafast -tune zerolatency"
         << L" -crf " << std::clamp(config.quality + 2, 20, 32)
         << L" -threads 2 -bf 0 -g " << std::clamp(config.fps * 2, 30, 120)
         << L" -pix_fmt yuv420p -movflags +faststart -f mp4 " << Quote(out.wstring());
-
-    encoderName_ = L"H.264 low-end compatibility mode";
+    encoderName_ = L"H.264 compatibility mode";
     return Launch(cmd.str());
 }
 
 bool Recorder::Start(HWND targetWindow, const std::wstring& outputPath, const RecordingConfig& config) {
     if (!IsWindow(targetWindow)) { lastError_ = L"Capture source was not found."; return false; }
-    RECT r{};
-    if (!GetWindowRect(targetWindow, &r)) { lastError_ = L"Could not read capture bounds."; return false; }
+    RECT r{}; if (!GetWindowRect(targetWindow, &r)) { lastError_ = L"Could not read capture bounds."; return false; }
     return StartRegion(r, outputPath, config);
 }
 
@@ -150,6 +138,29 @@ bool Recorder::StartRegion(const RECT& captureRect, const std::wstring& outputPa
     CloseProcessHandles();
     if (lastError_.empty()) lastError_ = L"FFmpeg stopped immediately. The recording could not be started.";
     return false;
+}
+
+bool Recorder::Screenshot(const RECT& captureRect, const std::wstring& outputPath) {
+    if (IsRecording()) { lastError_ = L"Stop recording before taking a screenshot."; return false; }
+    RECT r = captureRect;
+    const int width = r.right - r.left, height = r.bottom - r.top;
+    if (width <= 0 || height <= 0) { lastError_ = L"The screenshot region is invalid."; return false; }
+    std::wstring detail; const auto ffmpeg = FindFfmpeg(detail);
+    if (ffmpeg.empty()) { lastError_ = detail; return false; }
+    std::filesystem::path out(outputPath); std::error_code ec;
+    std::filesystem::create_directories(out.parent_path(), ec);
+    std::wstringstream cmd;
+    cmd << Quote(ffmpeg) << L" -hide_banner -loglevel error -y -f lavfi -i "
+        << Quote(BuildCaptureInput(r, 1, true)) << L" -frames:v 1 -vf " << Quote(L"hwdownload,format=bgra,format=yuv420p")
+        << L" -q:v 2 -frames:v 1 " << Quote(out.wstring());
+    if (!Launch(cmd.str())) return false;
+    if (WaitForSingleObject(process_, 10000) != WAIT_OBJECT_0) {
+        TerminateProcess(process_, 1); WaitForSingleObject(process_, 1000);
+    }
+    DWORD code = 1; GetExitCodeProcess(process_, &code);
+    CloseProcessHandles();
+    if (code != 0) { lastError_ = L"FFmpeg could not create the screenshot."; return false; }
+    return true;
 }
 
 void Recorder::Stop() {
