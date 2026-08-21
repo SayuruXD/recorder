@@ -19,7 +19,7 @@ target_compile_definitions(Recorder PRIVATE
 target_compile_options(Recorder PRIVATE /O2 /Oi /Ot /GL /Gy /Gw /EHsc /W4 /permissive-)
 target_link_options(Recorder PRIVATE /LTCG /OPT:REF /OPT:ICF)
 
-target_link_libraries(Recorder PRIVATE user32 shell32 shlwapi)
+target_link_libraries(Recorder PRIVATE user32 shell32 shlwapi gdiplus)
 
 set_target_properties(Recorder PROPERTIES
     WIN32_EXECUTABLE TRUE
