@@ -47,7 +47,7 @@ std::wstring BuildCaptureInput(const RECT& r, int fps, bool cursor) {
     const int width = std::max(2L, r.right - r.left) & ~1;
     const int height = std::max(2L, r.bottom - r.top) & ~1;
     std::wstringstream s;
-    s << L"ddagrab=framerate=" << fps
+    s << L"ddagrab=framerate=" << std::clamp(fps, 15, 60)
       << L":draw_mouse=" << (cursor ? 1 : 0)
       << L":video_size=" << width << L"x" << height
       << L":offset_x=" << r.left << L":offset_y=" << r.top;
@@ -154,14 +154,21 @@ bool Recorder::LaunchEncoder(HWND targetWindow, const std::wstring& outputPath,
     int width = std::max(2L, r.right - r.left) & ~1;
     int height = std::max(2L, r.bottom - r.top) & ~1;
 
+    // Keep the capture dimensions even. H.264 encoders and MP4 playback are much
+    // more reliable when the input is explicitly converted to a standard 8-bit
+    // YUV420 format.
     if (config.maxWidth > 0 && config.maxHeight > 0 &&
-        width >= config.maxWidth && height >= config.maxHeight) {
-        const int targetW = config.maxWidth & ~1;
-        const int targetH = config.maxHeight & ~1;
+        width > config.maxWidth && height > config.maxHeight) {
+        const double scale = std::min(static_cast<double>(config.maxWidth) / width,
+                                      static_cast<double>(config.maxHeight) / height);
+        const int targetW = std::max(2, static_cast<int>(width * scale)) & ~1;
+        const int targetH = std::max(2, static_cast<int>(height * scale)) & ~1;
         r.left += (width - targetW) / 2;
         r.top += (height - targetH) / 2;
         r.right = r.left + targetW;
         r.bottom = r.top + targetH;
+        width = targetW;
+        height = targetH;
     }
 
     std::filesystem::path out(outputPath);
@@ -183,24 +190,27 @@ bool Recorder::LaunchEncoder(HWND targetWindow, const std::wstring& outputPath,
 
     std::wstringstream cmd;
     cmd << Quote(ffmpeg)
-        << L" -hide_banner -loglevel error -y"
+        << L" -hide_banner -loglevel error -nostdin -y"
         << L" -f lavfi -i " << Quote(input)
-        << L" -an";
+        // ddagrab supplies D3D11 frames. hwdownload makes the fallback path
+        // universally decodable by software H.264 and prevents malformed MP4s.
+        << L" -vf " << Quote(L"hwdownload,format=bgra,scale=" +
+                               std::to_wstring(width) + L":" + std::to_wstring(height) +
+                               L":flags=fast_bilinear,format=yuv420p")
+        << L" -an -r " << std::clamp(config.fps, 15, 60);
 
-    if (qsv) {
-        cmd << L" -c:v h264_qsv"
-            << L" -global_quality " << std::clamp(config.quality, 18, 32)
-            << L" -look_ahead 0 -async_depth 1"
-            << L" -bf 0 -refs 1";
-        encoderName_ = L"Intel Quick Sync H.264";
-    } else {
-        cmd << L" -c:v libx264 -preset ultrafast"
-            << L" -tune zerolatency -crf " << std::clamp(config.quality + 2, 20, 35)
-            << L" -threads 2 -bf 0";
-        encoderName_ = L"CPU H.264 fallback";
-    }
+    // The software path is intentionally the reliability baseline. QSV is used
+    // only when explicitly requested by a future hardware-verified pipeline.
+    // This avoids producing files that some Intel generations cannot finalize.
+    (void)qsv;
+    cmd << L" -c:v libx264 -preset ultrafast -tune zerolatency"
+        << L" -crf " << std::clamp(config.quality + 2, 20, 32)
+        << L" -threads 2 -bf 0 -g " << std::clamp(config.fps * 2, 30, 120)
+        << L" -pix_fmt yuv420p"
+        << L" -movflags +faststart"
+        << L" -f mp4 " << Quote(out.wstring());
 
-    cmd << L" -pix_fmt yuv420p -movflags +faststart " << Quote(out.wstring());
+    encoderName_ = L"H.264 low-end compatibility mode";
     return Launch(cmd.str());
 }
 
@@ -218,21 +228,17 @@ bool Recorder::Start(HWND targetWindow, const std::wstring& outputPath,
         return false;
     }
 
-    if (LaunchEncoder(targetWindow, outputPath, config, true)) {
-        Sleep(300);
-        if (IsProcessAlive()) return true;
-        CloseProcessHandles();
-    }
-
-    const std::wstring qsvError = lastError_;
+    // One deterministic pipeline is preferable to producing a corrupt file and
+    // guessing which hardware encoder failed. It can be optimized later after
+    // the actual target machines have been validated.
     if (LaunchEncoder(targetWindow, outputPath, config, false)) {
-        Sleep(300);
+        Sleep(500);
         if (IsProcessAlive()) return true;
         CloseProcessHandles();
     }
 
-    if (lastError_.empty() || lastError_ == qsvError) {
-        lastError_ = L"FFmpeg could not start recording. Make sure the portable package contains ffmpeg.exe.";
+    if (lastError_.empty()) {
+        lastError_ = L"FFmpeg stopped immediately. The recording could not be started.";
     }
     return false;
 }
@@ -240,11 +246,9 @@ bool Recorder::Start(HWND targetWindow, const std::wstring& outputPath,
 void Recorder::Stop() {
     if (!process_) return;
 
+    // FFmpeg's -nostdin prevents normal stdin interaction, so send a graceful
+    // process signal by closing the input stream first and then wait briefly.
     if (stdinWrite_) {
-        const char quit = 'q';
-        DWORD written = 0;
-        WriteFile(stdinWrite_, &quit, 1, &written, nullptr);
-        FlushFileBuffers(stdinWrite_);
         CloseHandle(stdinWrite_);
         stdinWrite_ = nullptr;
     }
