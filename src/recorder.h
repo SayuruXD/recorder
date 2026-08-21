@@ -19,6 +19,7 @@ public:
 
     bool Start(HWND targetWindow, const std::wstring& outputPath, const RecordingConfig& config);
     bool StartRegion(const RECT& captureRect, const std::wstring& outputPath, const RecordingConfig& config);
+    bool Screenshot(const RECT& captureRect, const std::wstring& outputPath);
     void Stop();
     bool IsRecording() const { return process_ != nullptr; }
     const std::wstring& LastError() const { return lastError_; }
