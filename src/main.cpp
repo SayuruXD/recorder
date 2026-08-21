@@ -1,5 +1,4 @@
 #include "recorder.h"
-
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -9,319 +8,31 @@
 #include <filesystem>
 
 namespace {
-constexpr int ID_START = 1001;
-constexpr int ID_OPEN = 1002;
-constexpr int ID_FPS = 1004;
-constexpr int ID_QUALITY = 1005;
-constexpr int ID_CURSOR = 1006;
-constexpr int ID_PROFILE = 1007;
-constexpr int ID_SOURCE = 1009;
-constexpr int HOTKEY_ID = 7;
+constexpr int ID_RECORD=1001, ID_OPEN=1002, ID_SCREENSHOT=1003, ID_SOURCE=1004, ID_PROFILE=1005, ID_QUALITY=1006, ID_CURSOR=1007, ID_SELECT=1008, ID_FPS=1009;
+constexpr int HOTKEY_ID=7;
+constexpr COLORREF BG=RGB(11,15,22), PANEL=RGB(20,25,34), PANEL2=RGB(29,36,48), TEXT=RGB(240,244,250), MUTED=RGB(154,166,184), ACCENT=RGB(70,220,145), RED=RGB(238,82,92), SKY=RGB(89,167,220);
+Recorder g_recorder; HWND g_status=nullptr,g_record=nullptr,g_source=nullptr,g_profile=nullptr,g_quality=nullptr,g_fps=nullptr,g_cursor=nullptr,g_select=nullptr; HFONT g_titleFont=nullptr,g_normalFont=nullptr,g_smallFont=nullptr; HBRUSH g_bgBrush=nullptr; RECT g_region{}; bool g_hasRegion=false;
 
-constexpr COLORREF BG = RGB(15, 18, 24);
-constexpr COLORREF PANEL = RGB(24, 29, 38);
-constexpr COLORREF PANEL2 = RGB(31, 37, 48);
-constexpr COLORREF TEXT = RGB(235, 239, 245);
-constexpr COLORREF MUTED = RGB(150, 160, 175);
-constexpr COLORREF ACCENT = RGB(55, 210, 140);
-constexpr COLORREF RED = RGB(235, 75, 90);
+bool IsMinecraftTitle(std::wstring s){std::transform(s.begin(),s.end(),s.begin(),[](wchar_t c){return std::towlower(c);});return s.find(L"minecraft")!=std::wstring::npos;}
+BOOL CALLBACK FindMC(HWND h,LPARAM p){if(!IsWindowVisible(h)||IsIconic(h))return TRUE;wchar_t t[512]{};GetWindowTextW(h,t,511);if(IsMinecraftTitle(t)){*reinterpret_cast<HWND*>(p)=h;return FALSE;}return TRUE;}
+HWND Minecraft(){HWND h=nullptr;EnumWindows(FindMC,reinterpret_cast<LPARAM>(&h));return h;}
+RECT VirtualScreen(){RECT r{};r.left=GetSystemMetrics(SM_XVIRTUALSCREEN);r.top=GetSystemMetrics(SM_YVIRTUALSCREEN);r.right=r.left+GetSystemMetrics(SM_CXVIRTUALSCREEN);r.bottom=r.top+GetSystemMetrics(SM_CYVIRTUALSCREEN);return r;}
+std::wstring Folder(){wchar_t d[MAX_PATH]{};if(SUCCEEDED(SHGetFolderPathW(nullptr,CSIDL_PERSONAL,nullptr,SHGFP_TYPE_CURRENT,d))){std::filesystem::path p(d);p/=L"Recorder";std::error_code e;std::filesystem::create_directories(p,e);return p.wstring();}return L".";}
+std::wstring NewPath(const wchar_t* ext,const wchar_t* prefix){SYSTEMTIME s{};GetLocalTime(&s);wchar_t n[180]{};swprintf_s(n,L"%s_%04d-%02d-%02d_%02d-%02d-%02d.%s",prefix,s.wYear,s.wMonth,s.wDay,s.wHour,s.wMinute,s.wSecond,ext);return (std::filesystem::path(Folder())/n).wstring();}
+int ComboInt(HWND h,int fallback){int i=(int)SendMessageW(h,CB_GETCURSEL,0,0);if(i<0)return fallback;wchar_t t[32]{};SendMessageW(h,CB_GETLBTEXT,i,(LPARAM)t);return _wtoi(t);}
+void Font(HWND h,HFONT f){if(h)SendMessageW(h,WM_SETFONT,(WPARAM)f,TRUE);}
+void Label(HWND p,const wchar_t* t,int x,int y,int w,int h){HWND q=CreateWindowW(L"STATIC",t,WS_CHILD|WS_VISIBLE,x,y,w,h,p,nullptr,nullptr,nullptr);Font(q,g_smallFont);}
+void Status(const std::wstring& s,bool rec=false){if(g_status)SetWindowTextW(g_status,s.c_str());if(g_record){SetWindowTextW(g_record,rec?L"STOP RECORDING   |   F8":L"START RECORDING   |   F8");InvalidateRect(g_record,nullptr,TRUE);}}
 
-Recorder g_recorder;
-HWND g_status = nullptr;
-HWND g_start = nullptr;
-HWND g_fps = nullptr;
-HWND g_quality = nullptr;
-HWND g_cursor = nullptr;
-HWND g_profile = nullptr;
-HWND g_source = nullptr;
-HFONT g_titleFont = nullptr;
-HFONT g_normalFont = nullptr;
-HFONT g_smallFont = nullptr;
-HBRUSH g_bgBrush = nullptr;
+class Picker { public: bool Pick(RECT& out){ok=false;drag=false;rect={};owner=this;HINSTANCE i=GetModuleHandleW(nullptr);const wchar_t c[]=L"RecorderPicker";static bool reg=false;if(!reg){WNDCLASSW w{};w.lpfnWndProc=Proc;w.hInstance=i;w.hCursor=LoadCursor(nullptr,IDC_CROSS);w.hbrBackground=(HBRUSH)(COLOR_WINDOW+1);w.lpszClassName=c;RegisterClassW(&w);reg=true;}RECT v=VirtualScreen();hwnd=CreateWindowExW(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_LAYERED,c,L"Select recording area",WS_POPUP,v.left,v.top,v.right-v.left,v.bottom-v.top,nullptr,nullptr,i,nullptr);if(!hwnd)return false;SetLayeredWindowAttributes(hwnd,0,125,LWA_ALPHA);ShowWindow(hwnd,SW_SHOW);SetForegroundWindow(hwnd);SetFocus(hwnd);MSG m{};while(IsWindow(hwnd)&&GetMessageW(&m,nullptr,0,0)>0){TranslateMessage(&m);DispatchMessageW(&m);}if(ok)out=rect;return ok;}
+private: HWND hwnd=nullptr;RECT rect{};POINT start{};bool drag=false,ok=false;static Picker* owner;void Update(POINT p){rect.left=std::min(start.x,p.x);rect.right=std::max(start.x,p.x);rect.top=std::min(start.y,p.y);rect.bottom=std::max(start.y,p.y);}static LRESULT CALLBACK Proc(HWND h,UINT m,WPARAM w,LPARAM l){Picker*s=owner;switch(m){case WM_LBUTTONDOWN:s->drag=true;s->start={GET_X_LPARAM(l),GET_Y_LPARAM(l)};SetCapture(h);return 0;case WM_MOUSEMOVE:if(s->drag){s->Update({GET_X_LPARAM(l),GET_Y_LPARAM(l)});InvalidateRect(h,nullptr,FALSE);}return 0;case WM_LBUTTONUP:if(s->drag){s->drag=false;ReleaseCapture();s->Update({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(s->rect.right-s->rect.left>=20&&s->rect.bottom-s->rect.top>=20){s->ok=true;DestroyWindow(h);}InvalidateRect(h,nullptr,FALSE);}return 0;case WM_KEYDOWN:if(w==VK_ESCAPE){s->ok=false;DestroyWindow(h);}return 0;case WM_PAINT:{PAINTSTRUCT ps{};HDC d=BeginPaint(h,&ps);RECT c{};GetClientRect(h,&c);HBRUSH b=CreateSolidBrush(RGB(15,18,24));FillRect(d,&c,b);DeleteObject(b);SetBkMode(d,TRANSPARENT);SetTextColor(d,RGB(255,255,255));HFONT f=CreateFontW(22,0,0,0,FW_BOLD,0,0,0,DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Segoe UI");SelectObject(d,f);RECT tx{24,20,900,60};DrawTextW(d,L"DRAG TO SELECT   |   ENTER to confirm   |   ESC to cancel",-1,&tx,DT_LEFT|DT_SINGLELINE);DeleteObject(f);if(s->drag){HPEN p=CreatePen(PS_SOLID,3,RGB(70,220,145));HGDIOBJ op=SelectObject(d,p);HGDIOBJ ob=SelectObject(d,GetStockObject(NULL_BRUSH));Rectangle(d,s->rect.left,s->rect.top,s->rect.right,s->rect.bottom);SelectObject(d,ob);SelectObject(d,op);DeleteObject(p);}EndPaint(h,&ps);return 0;}case WM_DESTROY:s->hwnd=nullptr;return 0;}return DefWindowProcW(h,m,w,l);} };
+Picker* Picker::owner=nullptr;
+void SelectRegion(HWND main){Picker p;RECT r{};if(p.Pick(r)){RECT v=VirtualScreen();r.left+=v.left;r.right+=v.left;r.top+=v.top;r.bottom+=v.top;g_region=r;g_hasRegion=true;SetWindowTextW(g_select,L"Change selected region");Status(L"Region selected: "+std::to_wstring(r.right-r.left)+L" x "+std::to_wstring(r.bottom-r.top));}SetForegroundWindow(main);}
+RECT Source(bool& ok){ok=false;int s=(int)SendMessageW(g_source,CB_GETCURSEL,0,0);if(s==2&&g_hasRegion){ok=true;return g_region;}if(s==1){ok=true;return VirtualScreen();}HWND m=Minecraft();RECT r{};if(m&&GetWindowRect(m,&r))ok=true;return r;}
+void Toggle(){if(g_recorder.IsRecording()){g_recorder.Stop();Status(L"Ready. Recording saved to Documents\\Recorder.");return;}bool ok=false;RECT r=Source(ok);if(!ok){Status(L"No valid capture source. Open Minecraft or select a region.");MessageBeep(MB_ICONWARNING);return;}int p=(int)SendMessageW(g_profile,CB_GETCURSEL,0,0);RecordingConfig c{};c.fps=ComboInt(g_fps,p==1?60:30);c.quality=ComboInt(g_quality,26);c.captureCursor=SendMessageW(g_cursor,BM_GETCHECK,0,0)==BST_CHECKED;if(p==0){c.maxWidth=1280;c.maxHeight=720;}else if(p==1){c.maxWidth=1280;c.maxHeight=720;}else if(p==2){c.maxWidth=1920;c.maxHeight=1080;}else{c.maxWidth=0;c.maxHeight=0;}if(!g_recorder.StartRegion(r,NewPath(L"mp4",L"Recording"),c)){Status(g_recorder.LastError());MessageBeep(MB_ICONERROR);return;}Status(L"Recording  |  "+std::to_wstring(c.fps)+L" FPS  |  "+g_recorder.EncoderName(),true);}
+void Screenshot(){if(g_recorder.IsRecording()){Status(L"Stop recording before taking a screenshot.");return;}bool ok=false;RECT r=Source(ok);if(!ok){Status(L"Choose a valid capture source first.");return;}if(g_recorder.Screenshot(r,NewPath(L"png",L"Screenshot")))Status(L"Screenshot saved to Documents\\Recorder.");else Status(g_recorder.LastError());}
+void OpenFolder(HWND h){std::wstring p=Folder();ShellExecuteW(h,L"open",p.c_str(),nullptr,nullptr,SW_SHOWNORMAL);}
 
-bool ContainsMinecraft(std::wstring title) {
-    std::transform(title.begin(), title.end(), title.begin(), [](wchar_t c) { return std::towlower(c); });
-    return title.find(L"minecraft") != std::wstring::npos;
+LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){switch(m){case WM_CREATE:{g_titleFont=CreateFontW(30,0,0,0,FW_BOLD,0,0,0,DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Segoe UI");g_normalFont=CreateFontW(15,0,0,0,FW_NORMAL,0,0,0,DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Segoe UI");g_smallFont=CreateFontW(12,0,0,0,FW_SEMIBOLD,0,0,0,DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Segoe UI");g_bgBrush=CreateSolidBrush(BG);HWND t=CreateWindowW(L"STATIC",L"RECORDER",WS_CHILD|WS_VISIBLE,30,22,320,40,h,nullptr,nullptr,nullptr);Font(t,g_titleFont);HWND st=CreateWindowW(L"STATIC",L"Minecraft Capture Studio",WS_CHILD|WS_VISIBLE,32,61,300,24,h,nullptr,nullptr,nullptr);Font(st,g_smallFont);g_status=CreateWindowW(L"STATIC",L"Ready  |  F8 to record",WS_CHILD|WS_VISIBLE,32,91,700,30,h,nullptr,nullptr,nullptr);Font(g_status,g_normalFont);Label(h,L"CAPTURE SOURCE",32,137,150,20);g_source=CreateWindowW(L"COMBOBOX",L"Minecraft window",WS_CHILD|WS_VISIBLE|CBS_DROPDOWNLIST,32,159,235,120,h,(HMENU)ID_SOURCE,nullptr,nullptr);for(const wchar_t*s:{L"Minecraft window",L"Full screen",L"Selected region"})SendMessageW(g_source,CB_ADDSTRING,0,(LPARAM)s);SendMessageW(g_source,CB_SETCURSEL,0,0);Font(g_source,g_normalFont);g_select=CreateWindowW(L"BUTTON",L"Select region...",WS_CHILD|WS_VISIBLE,280,159,150,34,h,(HMENU)ID_SELECT,nullptr,nullptr);Font(g_select,g_normalFont);g_cursor=CreateWindowW(L"BUTTON",L"Capture cursor",WS_CHILD|WS_VISIBLE|BS_AUTOCHECKBOX,447,162,135,28,h,(HMENU)ID_CURSOR,nullptr,nullptr);SendMessageW(g_cursor,BM_SETCHECK,BST_CHECKED,0);Font(g_cursor,g_normalFont);Label(h,L"PROFILE",32,213,100,20);g_profile=CreateWindowW(L"COMBOBOX",L"Low-end 720p",WS_CHILD|WS_VISIBLE|CBS_DROPDOWNLIST,32,235,235,125,h,(HMENU)ID_PROFILE,nullptr,nullptr);for(const wchar_t*s:{L"Low-end 720p",L"720p 60 FPS",L"1080p 30 FPS",L"Native / Full resolution"})SendMessageW(g_profile,CB_ADDSTRING,0,(LPARAM)s);SendMessageW(g_profile,CB_SETCURSEL,0,0);Font(g_profile,g_normalFont);Label(h,L"FPS",280,213,70,20);g_fps=CreateWindowW(L"COMBOBOX",L"30",WS_CHILD|WS_VISIBLE|CBS_DROPDOWNLIST,280,235,85,110,h,(HMENU)ID_FPS,nullptr,nullptr);for(const wchar_t*s:{L"30",L"60"})SendMessageW(g_fps,CB_ADDSTRING,0,(LPARAM)s);SendMessageW(g_fps,CB_SETCURSEL,0,0);Font(g_fps,g_normalFont);Label(h,L"QUALITY",385,213,80,20);g_quality=CreateWindowW(L"COMBOBOX",L"26",WS_CHILD|WS_VISIBLE|CBS_DROPDOWNLIST,385,235,85,110,h,(HMENU)ID_QUALITY,nullptr,nullptr);for(const wchar_t*s:{L"22",L"26",L"30"})SendMessageW(g_quality,CB_ADDSTRING,0,(LPARAM)s);SendMessageW(g_quality,CB_SETCURSEL,1,0);Font(g_quality,g_normalFont);g_record=CreateWindowW(L"BUTTON",L"START RECORDING   |   F8",WS_CHILD|WS_VISIBLE|BS_OWNERDRAW,32,302,300,58,h,(HMENU)ID_RECORD,nullptr,nullptr);Font(g_record,g_normalFont);HWND shot=CreateWindowW(L"BUTTON",L"TAKE SCREENSHOT",WS_CHILD|WS_VISIBLE,350,302,235,58,h,(HMENU)ID_SCREENSHOT,nullptr,nullptr);Font(shot,g_normalFont);HWND open=CreateWindowW(L"BUTTON",L"Open recordings",WS_CHILD|WS_VISIBLE,32,374,190,40,h,(HMENU)ID_OPEN,nullptr,nullptr);Font(open,g_normalFont);HWND foot=CreateWindowW(L"STATIC",L"H.264  |  GPU capture  |  Low overhead  |  No preview",WS_CHILD|WS_VISIBLE,245,384,340,24,h,nullptr,nullptr,nullptr);Font(foot,g_smallFont);RegisterHotKey(h,HOTKEY_ID,0,VK_F8);return 0;}case WM_ERASEBKGND:return 1;case WM_PAINT:{PAINTSTRUCT ps{};HDC d=BeginPaint(h,&ps);RECT r{};GetClientRect(h,&r);HBRUSH b=CreateSolidBrush(BG);FillRect(d,&r,b);DeleteObject(b);RECT sky{0,0,r.right,145};HBRUSH sb=CreateSolidBrush(SKY);FillRect(d,&sky,sb);DeleteObject(sb);HBRUSH cloud=CreateSolidBrush(RGB(220,238,248));RECT c1{420,32,530,50},c2{470,20,570,47};FillRect(d,&c1,cloud);FillRect(d,&c2,cloud);DeleteObject(cloud);HBRUSH hill=CreateSolidBrush(RGB(54,91,58));POINT pts[]={{0,145},{0,125},{110,110},{220,128},{330,105},{440,124},{560,100},{r.right,120},{r.right,145}};HRGN rg=CreatePolygonRgn(pts,9,WINDING);FillRgn(d,rg,hill);DeleteObject(rg);DeleteObject(hill);HBRUSH panel=CreateSolidBrush(PANEL);RECT body{18,125,r.right-18,r.bottom-16};FillRect(d,&body,panel);DeleteObject(panel);EndPaint(h,&ps);return 0;}case WM_CTLCOLORSTATIC:{HDC d=(HDC)w;SetBkMode(d,TRANSPARENT);SetTextColor(d,(HWND)l==g_status?TEXT:MUTED);return(LRESULT)g_bgBrush;}case WM_DRAWITEM:{auto*d=reinterpret_cast<DRAWITEMSTRUCT*>(l);if(d->CtlID==ID_RECORD){HBRUSH b=CreateSolidBrush(g_recorder.IsRecording()?RED:ACCENT);FillRect(d->hDC,&d->rcItem,b);DeleteObject(b);SetBkMode(d->hDC,TRANSPARENT);SetTextColor(d->hDC,RGB(8,13,18));DrawTextW(d->hDC,g_recorder.IsRecording()?L"STOP RECORDING   |   F8":L"START RECORDING   |   F8",-1,&d->rcItem,DT_CENTER|DT_VCENTER|DT_SINGLELINE);return TRUE;}break;}case WM_COMMAND:switch(LOWORD(w)){case ID_RECORD:Toggle();break;case ID_SCREENSHOT:Screenshot();break;case ID_OPEN:OpenFolder(h);break;case ID_SELECT:SelectRegion(h);break;case ID_SOURCE:if(HIWORD(w)==CBN_SELCHANGE&&(int)SendMessageW(g_source,CB_GETCURSEL,0,0)==2)SelectRegion(h);break;case ID_PROFILE:if(HIWORD(w)==CBN_SELCHANGE){int p=(int)SendMessageW(g_profile,CB_GETCURSEL,0,0);SendMessageW(g_fps,CB_SETCURSEL,p==1?1:0,0);}break;}return 0;case WM_HOTKEY:if(w==HOTKEY_ID)Toggle();return 0;case WM_CLOSE:if(g_recorder.IsRecording()&&MessageBoxW(h,L"A recording is still running. Stop and close?",L"Recorder",MB_YESNO|MB_ICONQUESTION)!=IDYES)return 0;DestroyWindow(h);return 0;case WM_DESTROY:UnregisterHotKey(h,HOTKEY_ID);g_recorder.Stop();if(g_titleFont)DeleteObject(g_titleFont);if(g_normalFont)DeleteObject(g_normalFont);if(g_smallFont)DeleteObject(g_smallFont);if(g_bgBrush)DeleteObject(g_bgBrush);PostQuitMessage(0);return 0;}return DefWindowProcW(h,m,w,l);}
 }
-
-BOOL CALLBACK FindMinecraftProc(HWND hwnd, LPARAM param) {
-    if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) return TRUE;
-    wchar_t title[512]{};
-    GetWindowTextW(hwnd, title, 511);
-    if (ContainsMinecraft(title)) {
-        *reinterpret_cast<HWND*>(param) = hwnd;
-        return FALSE;
-    }
-    return TRUE;
-}
-
-HWND FindMinecraftWindow() {
-    HWND result = nullptr;
-    EnumWindows(FindMinecraftProc, reinterpret_cast<LPARAM>(&result));
-    return result;
-}
-
-std::wstring RecordingsFolder() {
-    wchar_t docs[MAX_PATH]{};
-    if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_PERSONAL, nullptr, SHGFP_TYPE_CURRENT, docs))) {
-        std::filesystem::path p(docs);
-        p /= L"Recorder";
-        std::error_code ec;
-        std::filesystem::create_directories(p, ec);
-        return p.wstring();
-    }
-    return L".";
-}
-
-std::wstring OutputPath() {
-    std::filesystem::path p(RecordingsFolder());
-    SYSTEMTIME st{};
-    GetLocalTime(&st);
-    wchar_t name[128]{};
-    swprintf_s(name, L"Recording_%04d-%02d-%02d_%02d-%02d-%02d.mp4",
-               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-    p /= name;
-    return p.wstring();
-}
-
-int ComboValue(HWND combo, int fallback) {
-    const int index = static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0));
-    if (index < 0) return fallback;
-    wchar_t text[32]{};
-    SendMessageW(combo, CB_GETLBTEXT, index, reinterpret_cast<LPARAM>(text));
-    return _wtoi(text);
-}
-
-void SetStatus(const std::wstring& text, bool recording = false) {
-    if (g_status) SetWindowTextW(g_status, text.c_str());
-    if (g_start) {
-        SetWindowTextW(g_start, recording ? L"STOP RECORDING   •   F8" : L"START RECORDING   •   F8");
-        InvalidateRect(g_start, nullptr, TRUE);
-    }
-}
-
-void ToggleRecording() {
-    if (g_recorder.IsRecording()) {
-        g_recorder.Stop();
-        SetStatus(L"Ready. Recording saved to Documents\\Recorder.");
-        return;
-    }
-
-    const int source = static_cast<int>(SendMessageW(g_source, CB_GETCURSEL, 0, 0));
-    const bool fullScreen = source == 1;
-    HWND target = fullScreen ? GetDesktopWindow() : FindMinecraftWindow();
-
-    if (!target || !IsWindow(target)) {
-        SetStatus(fullScreen ? L"Could not access the desktop screen." : L"Minecraft was not found. Open the game first.");
-        MessageBeep(MB_ICONWARNING);
-        return;
-    }
-
-    RecordingConfig config;
-    config.fps = ComboValue(g_fps, 30);
-    config.quality = ComboValue(g_quality, 26);
-    config.maxWidth = 1280;
-    config.maxHeight = 720;
-    config.lowEndMode = true;
-    config.captureCursor = SendMessageW(g_cursor, BM_GETCHECK, 0, 0) == BST_CHECKED;
-
-    if (!g_recorder.Start(target, OutputPath(), config)) {
-        SetStatus(g_recorder.LastError());
-        MessageBeep(MB_ICONERROR);
-        return;
-    }
-
-    const std::wstring sourceName = fullScreen ? L"Full screen" : L"Minecraft";
-    SetStatus(L"Recording " + sourceName + L"  •  " + std::to_wstring(config.fps) + L" FPS  •  " + g_recorder.EncoderName(), true);
-}
-
-void OpenRecordings(HWND hwnd) {
-    const std::wstring folder = RecordingsFolder();
-    ShellExecuteW(hwnd, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-}
-
-void ApplyFont(HWND h, HFONT font) {
-    if (h) SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-}
-
-void CreateFonts() {
-    g_titleFont = CreateFontW(28, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                              CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-    g_normalFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                               CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-    g_smallFont = CreateFontW(12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                              CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-}
-
-void AddLabel(HWND parent, const wchar_t* text, int x, int y, int w, int h) {
-    HWND label = CreateWindowW(L"STATIC", text, WS_CHILD | WS_VISIBLE, x, y, w, h,
-                               parent, nullptr, nullptr, nullptr);
-    ApplyFont(label, g_smallFont);
-}
-
-LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-    case WM_CREATE: {
-        CreateFonts();
-        g_bgBrush = CreateSolidBrush(BG);
-
-        HWND title = CreateWindowW(L"STATIC", L"Recorder", WS_CHILD | WS_VISIBLE,
-            26, 20, 300, 36, hwnd, nullptr, nullptr, nullptr);
-        ApplyFont(title, g_titleFont);
-
-        HWND subtitle = CreateWindowW(L"STATIC", L"Lightweight screen capture for Minecraft", WS_CHILD | WS_VISIBLE,
-            28, 57, 400, 22, hwnd, nullptr, nullptr, nullptr);
-        ApplyFont(subtitle, g_smallFont);
-
-        g_status = CreateWindowW(L"STATIC", L"Ready. Press F8 or click Start Recording.",
-            WS_CHILD | WS_VISIBLE | SS_LEFT, 26, 88, 600, 34, hwnd, nullptr, nullptr, nullptr);
-        ApplyFont(g_status, g_normalFont);
-
-        AddLabel(hwnd, L"CAPTURE SOURCE", 26, 132, 150, 20);
-        g_source = CreateWindowW(L"COMBOBOX", L"Minecraft window", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
-            26, 155, 250, 110, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SOURCE)), nullptr, nullptr);
-        SendMessageW(g_source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Minecraft window"));
-        SendMessageW(g_source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Full screen"));
-        SendMessageW(g_source, CB_SETCURSEL, 0, 0);
-        ApplyFont(g_source, g_normalFont);
-
-        AddLabel(hwnd, L"PROFILE", 300, 132, 100, 20);
-        g_profile = CreateWindowW(L"COMBOBOX", L"Low-end 720p", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
-            300, 155, 180, 110, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_PROFILE)), nullptr, nullptr);
-        SendMessageW(g_profile, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Low-end 720p"));
-        SendMessageW(g_profile, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"720p 60 FPS"));
-        SendMessageW(g_profile, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"1080p 30 FPS"));
-        SendMessageW(g_profile, CB_SETCURSEL, 0, 0);
-        ApplyFont(g_profile, g_normalFont);
-
-        AddLabel(hwnd, L"FPS", 26, 205, 70, 20);
-        g_fps = CreateWindowW(L"COMBOBOX", L"30", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
-            26, 228, 80, 105, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_FPS)), nullptr, nullptr);
-        SendMessageW(g_fps, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"30"));
-        SendMessageW(g_fps, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"60"));
-        SendMessageW(g_fps, CB_SETCURSEL, 0, 0);
-        ApplyFont(g_fps, g_normalFont);
-
-        AddLabel(hwnd, L"QUALITY", 135, 205, 80, 20);
-        g_quality = CreateWindowW(L"COMBOBOX", L"26", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
-            135, 228, 80, 105, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_QUALITY)), nullptr, nullptr);
-        SendMessageW(g_quality, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"22"));
-        SendMessageW(g_quality, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"26"));
-        SendMessageW(g_quality, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"30"));
-        SendMessageW(g_quality, CB_SETCURSEL, 1, 0);
-        ApplyFont(g_quality, g_normalFont);
-
-        g_cursor = CreateWindowW(L"BUTTON", L"Capture cursor", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-            250, 229, 130, 26, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_CURSOR)), nullptr, nullptr);
-        SendMessageW(g_cursor, BM_SETCHECK, BST_CHECKED, 0);
-        ApplyFont(g_cursor, g_normalFont);
-
-        g_start = CreateWindowW(L"BUTTON", L"START RECORDING   •   F8",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 26, 300, 300, 52, hwnd,
-            reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_START)), nullptr, nullptr);
-        ApplyFont(g_start, g_normalFont);
-
-        HWND open = CreateWindowW(L"BUTTON", L"Open recordings",
-            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 345, 300, 200, 52, hwnd,
-            reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_OPEN)), nullptr, nullptr);
-        ApplyFont(open, g_normalFont);
-
-        HWND footer = CreateWindowW(L"STATIC",
-            L"GPU-first capture  •  H.264  •  No preview  •  Built for low-end PCs",
-            WS_CHILD | WS_VISIBLE, 26, 365, 560, 22, hwnd, nullptr, nullptr, nullptr);
-        ApplyFont(footer, g_smallFont);
-
-        RegisterHotKey(hwnd, HOTKEY_ID, 0, VK_F8);
-        return 0;
-    }
-    case WM_CTLCOLORSTATIC: {
-        HDC dc = reinterpret_cast<HDC>(wParam);
-        SetBkColor(dc, BG);
-        SetTextColor(dc, (reinterpret_cast<HWND>(lParam) == g_status) ? TEXT : MUTED);
-        return reinterpret_cast<LRESULT>(g_bgBrush);
-    }
-    case WM_CTLCOLORBTN: {
-        HDC dc = reinterpret_cast<HDC>(wParam);
-        SetBkColor(dc, PANEL2);
-        SetTextColor(dc, TEXT);
-        return reinterpret_cast<LRESULT>(g_bgBrush);
-    }
-    case WM_DRAWITEM: {
-        const auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
-        if (dis->CtlID != ID_START) break;
-        HBRUSH brush = CreateSolidBrush(g_recorder.IsRecording() ? RED : ACCENT);
-        FillRect(dis->hDC, &dis->rcItem, brush);
-        DeleteObject(brush);
-        SetBkMode(dis->hDC, TRANSPARENT);
-        SetTextColor(dis->hDC, RGB(10, 14, 18));
-        const wchar_t* label = g_recorder.IsRecording() ? L"STOP RECORDING   •   F8" : L"START RECORDING   •   F8";
-        RECT textRect = dis->rcItem;
-        DrawTextW(dis->hDC, label, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        return TRUE;
-    }
-    case WM_COMMAND:
-        switch (LOWORD(wParam)) {
-        case ID_START: ToggleRecording(); break;
-        case ID_OPEN: OpenRecordings(hwnd); break;
-        case ID_PROFILE:
-            if (HIWORD(wParam) == CBN_SELCHANGE) {
-                const int p = static_cast<int>(SendMessageW(g_profile, CB_GETCURSEL, 0, 0));
-                SendMessageW(g_fps, CB_SETCURSEL, p == 1 ? 1 : 0, 0);
-            }
-            break;
-        }
-        return 0;
-    case WM_HOTKEY:
-        if (wParam == HOTKEY_ID) ToggleRecording();
-        return 0;
-    case WM_CLOSE:
-        if (g_recorder.IsRecording()) {
-            const int answer = MessageBoxW(hwnd, L"A recording is still running. Stop and close Recorder?",
-                                           L"Recorder", MB_YESNO | MB_ICONQUESTION);
-            if (answer != IDYES) return 0;
-        }
-        DestroyWindow(hwnd);
-        return 0;
-    case WM_DESTROY:
-        UnregisterHotKey(hwnd, HOTKEY_ID);
-        g_recorder.Stop();
-        if (g_titleFont) DeleteObject(g_titleFont);
-        if (g_normalFont) DeleteObject(g_normalFont);
-        if (g_smallFont) DeleteObject(g_smallFont);
-        if (g_bgBrush) DeleteObject(g_bgBrush);
-        PostQuitMessage(0);
-        return 0;
-    }
-    return DefWindowProcW(hwnd, msg, wParam, lParam);
-}
-
-} // namespace
-
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
-    const wchar_t CLASS_NAME[] = L"RecorderMainWindow";
-    WNDCLASSW wc{};
-    wc.lpfnWndProc = WndProc;
-    wc.hInstance = instance;
-    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wc.hbrBackground = CreateSolidBrush(BG);
-    wc.lpszClassName = CLASS_NAME;
-    RegisterClassW(&wc);
-
-    HWND hwnd = CreateWindowExW(0, CLASS_NAME, L"Recorder | Minecraft Capture",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 610, 430, nullptr, nullptr, instance, nullptr);
-    if (!hwnd) return 1;
-
-    ShowWindow(hwnd, show);
-    UpdateWindow(hwnd);
-
-    MSG msg{};
-    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
-    return static_cast<int>(msg.wParam);
-}
+int WINAPI wWinMain(HINSTANCE i,HINSTANCE,PWSTR,int show){const wchar_t cls[]=L"RecorderMainWindow";WNDCLASSW wc{};wc.lpfnWndProc=WndProc;wc.hInstance=i;wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hbrBackground=CreateSolidBrush(BG);wc.lpszClassName=cls;RegisterClassW(&wc);HWND h=CreateWindowExW(0,cls,L"Recorder | Minecraft Capture Studio",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,CW_USEDEFAULT,CW_USEDEFAULT,630,455,nullptr,nullptr,i,nullptr);if(!h)return 1;ShowWindow(h,show);UpdateWindow(h);MSG m{};while(GetMessageW(&m,nullptr,0,0)>0){TranslateMessage(&m);DispatchMessageW(&m);}return(int)m.wParam;}
