@@ -86,43 +86,24 @@ bool Recorder::Launch(const std::wstring& commandLine) {
     CloseHandle(pi.hThread); process_ = pi.hProcess; stdinWrite_ = stdinWrite; return true;
 }
 
-bool Recorder::LaunchEncoder(HWND targetWindow, const std::wstring& outputPath,
-                             const RecordingConfig& config, bool qsv) {
-    (void)qsv;
-    if (!targetWindow) { lastError_ = L"No capture source was selected."; return false; }
-
-    const bool fullScreen = targetWindow == GetDesktopWindow();
-    if (!fullScreen && IsIconic(targetWindow)) {
-        lastError_ = L"Minecraft is minimized. Restore the game before recording.";
-        return false;
-    }
-
-    RECT r{};
-    if (!GetWindowRect(targetWindow, &r) || r.right <= r.left || r.bottom <= r.top) {
-        lastError_ = fullScreen ? L"Could not read the desktop screen bounds." : L"Could not read the Minecraft window bounds.";
+bool Recorder::LaunchEncoder(const RECT& captureRect, const std::wstring& outputPath,
+                             const RecordingConfig& config) {
+    RECT r = captureRect;
+    if (r.right <= r.left || r.bottom <= r.top) {
+        lastError_ = L"The selected capture region is invalid.";
         return false;
     }
 
     int width = std::max(2L, r.right - r.left) & ~1;
     int height = std::max(2L, r.bottom - r.top) & ~1;
-
-    // For a full-screen recording we preserve the entire screen. If it is larger
-    // than the low-end target, scale the complete frame down instead of cropping it.
     int outputWidth = width;
     int outputHeight = height;
+
     if (config.maxWidth > 0 && config.maxHeight > 0 && (width > config.maxWidth || height > config.maxHeight)) {
         const double scale = std::min(static_cast<double>(config.maxWidth) / width,
                                       static_cast<double>(config.maxHeight) / height);
         outputWidth = std::max(2, static_cast<int>(width * scale)) & ~1;
         outputHeight = std::max(2, static_cast<int>(height * scale)) & ~1;
-        if (!fullScreen) {
-            r.left += (width - outputWidth) / 2;
-            r.top += (height - outputHeight) / 2;
-            r.right = r.left + outputWidth;
-            r.bottom = r.top + outputHeight;
-            width = outputWidth;
-            height = outputHeight;
-        }
     }
 
     std::filesystem::path out(outputPath); std::error_code ec;
@@ -154,14 +135,19 @@ bool Recorder::LaunchEncoder(HWND targetWindow, const std::wstring& outputPath,
 }
 
 bool Recorder::Start(HWND targetWindow, const std::wstring& outputPath, const RecordingConfig& config) {
+    if (!IsWindow(targetWindow)) { lastError_ = L"Capture source was not found."; return false; }
+    RECT r{};
+    if (!GetWindowRect(targetWindow, &r)) { lastError_ = L"Could not read capture bounds."; return false; }
+    return StartRegion(r, outputPath, config);
+}
+
+bool Recorder::StartRegion(const RECT& captureRect, const std::wstring& outputPath, const RecordingConfig& config) {
     lastError_.clear(); encoderName_.clear();
     if (IsRecording()) { lastError_ = L"A recording is already running."; return false; }
-    if (!IsWindow(targetWindow)) { lastError_ = L"Capture source was not found."; return false; }
-    if (LaunchEncoder(targetWindow, outputPath, config, false)) {
-        Sleep(500);
-        if (IsProcessAlive()) return true;
-        CloseProcessHandles();
-    }
+    if (!LaunchEncoder(captureRect, outputPath, config)) return false;
+    Sleep(500);
+    if (IsProcessAlive()) return true;
+    CloseProcessHandles();
     if (lastError_.empty()) lastError_ = L"FFmpeg stopped immediately. The recording could not be started.";
     return false;
 }
