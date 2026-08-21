@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <shellapi.h>
+#include <shlobj.h>
 #include <string>
 #include <algorithm>
 #include <cwctype>
@@ -12,12 +13,10 @@ constexpr int ID_START = 1001;
 constexpr int ID_OPEN = 1002;
 constexpr int ID_STATUS = 1003;
 constexpr int HOTKEY_ID = 7;
-constexpr UINT WM_RECORDER_STATE = WM_APP + 1;
 
 Recorder g_recorder;
 HWND g_status = nullptr;
 HWND g_start = nullptr;
-HWND g_window = nullptr;
 
 bool ContainsMinecraft(std::wstring title) {
     std::transform(title.begin(), title.end(), title.begin(), [](wchar_t c) { return std::towlower(c); });
@@ -81,14 +80,13 @@ void ToggleRecording() {
         return;
     }
 
-    SetStatus(L"● RECORDING  |  720p target  |  30 FPS");
+    SetStatus(L"RECORDING  |  720p target  |  30 FPS");
     SetWindowTextW(g_start, L"Stop Recording (F8)");
 }
 
-LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM) {
     switch (msg) {
-    case WM_CREATE: {
-        g_window = hwnd;
+    case WM_CREATE:
         g_status = CreateWindowW(L"STATIC", L"Ready  |  Press F8 to record Minecraft",
             WS_CHILD | WS_VISIBLE, 24, 32, 390, 28, hwnd, (HMENU)ID_STATUS, nullptr, nullptr);
         g_start = CreateWindowW(L"BUTTON", L"Start Recording (F8)",
@@ -99,7 +97,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             (HMENU)ID_OPEN, nullptr, nullptr);
         RegisterHotKey(hwnd, HOTKEY_ID, 0, VK_F8);
         return 0;
-    }
     case WM_COMMAND:
         if (LOWORD(wParam) == ID_START) ToggleRecording();
         if (LOWORD(wParam) == ID_OPEN) {
