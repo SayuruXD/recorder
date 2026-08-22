@@ -30,8 +30,9 @@ std::wstring BuildCaptureInput(const RECT& r, int fps, bool cursor) {
     const int width = std::max(2L, r.right - r.left) & ~1;
     const int height = std::max(2L, r.bottom - r.top) & ~1;
     std::wstringstream s;
-    s << L"ddagrab=framerate=" << std::clamp(fps, 15, 60)
+    s << L"ddagrab=framerate=" << std::clamp(fps, 15, 120)
       << L":draw_mouse=" << (cursor ? 1 : 0)
+      << L":dup_frames=1"
       << L":video_size=" << width << L"x" << height
       << L":offset_x=" << r.left << L":offset_y=" << r.top;
     return s.str();
@@ -75,7 +76,7 @@ bool Recorder::Launch(const std::wstring& commandLine) {
     PROCESS_INFORMATION pi{};
     std::vector<wchar_t> buffer(commandLine.begin(), commandLine.end()); buffer.push_back(L'\0');
     const BOOL ok = CreateProcessW(nullptr, buffer.data(), nullptr, nullptr, TRUE,
-                                   CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS,
+                                   CREATE_NO_WINDOW | NORMAL_PRIORITY_CLASS,
                                    nullptr, nullptr, &si, &pi);
     CloseHandle(stdinRead); CloseHandle(nulOut); CloseHandle(nulErr);
     if (!ok) {
@@ -105,24 +106,35 @@ bool Recorder::LaunchEncoder(const RECT& captureRect, const std::wstring& output
     std::wstring detail; const std::wstring ffmpeg = FindFfmpeg(detail);
     if (ffmpeg.empty()) { lastError_ = detail; return false; }
 
-    // Keep the capture path on the GPU as long as possible. Quick Sync is a much
-    // better fit for low-end Intel CPUs than software x264. The fallback remains
-    // available for machines where the Intel encoder is unavailable.
-    const std::wstring input = BuildCaptureInput(r, config.fps, config.captureCursor);
-    std::wstringstream qsvFilter;
-    qsvFilter << L"hwmap=derive_device=qsv,format=qsv";
-    if (outputWidth != width || outputHeight != height)
-        qsvFilter << L",scale_qsv=w=" << outputWidth << L":h=" << outputHeight;
+    const int fps = std::clamp(config.fps, 15, 120);
+    const std::wstring input = BuildCaptureInput(r, fps, config.captureCursor);
 
+    // Dedicated recorder path: FFmpeg + DXGI Desktop Duplication capture +
+    // Intel Quick Sync H.264. ddagrab produces D3D11 hardware frames, so avoid
+    // the old hwmap round-trip and feed the hardware frames directly to QSV.
+    // This keeps the CPU out of the per-frame pixel-copy path.
     std::wstringstream cmd;
-    cmd << Quote(ffmpeg) << L" -hide_banner -loglevel error -y -f lavfi -i " << Quote(input)
-        << L" -vf " << Quote(qsvFilter.str())
-        << L" -an -fps_mode cfr -r " << std::clamp(config.fps, 15, 60)
-        << L" -c:v h264_qsv -preset veryfast -global_quality "
-        << std::clamp(config.quality + 4, 20, 32)
-        << L" -bf 0 -g " << std::clamp(config.fps * 2, 30, 120)
-        << L" -pix_fmt nv12 -movflags +faststart -f mp4 " << Quote(out.wstring());
-    encoderName_ = L"H.264 Intel Quick Sync";
+    cmd << Quote(ffmpeg)
+        << L" -hide_banner -loglevel error -y"
+        << L" -init_hw_device qsv=hw,child_device_type=d3d11va"
+        << L" -filter_hw_device hw"
+        << L" -f lavfi -i " << Quote(input);
+
+    if (outputWidth != width || outputHeight != height) {
+        cmd << L" -vf " << Quote(L"scale_qsv=w=" + std::to_wstring(outputWidth) + L":h=" + std::to_wstring(outputHeight));
+    }
+
+    cmd << L" -an -fps_mode cfr -r " << fps
+        << L" -c:v h264_qsv"
+        << L" -preset veryfast"
+        << L" -global_quality " << std::clamp(config.quality, 18, 28)
+        << L" -bf 0"
+        << L" -g " << std::clamp(fps * 2, 30, 240)
+        << L" -pix_fmt nv12"
+        << L" -movflags +faststart"
+        << L" -f mp4 " << Quote(out.wstring());
+
+    encoderName_ = L"H.264 Intel Quick Sync + DXGI capture";
     return Launch(cmd.str());
 }
 
@@ -136,7 +148,7 @@ bool Recorder::StartRegion(const RECT& captureRect, const std::wstring& outputPa
     lastError_.clear(); encoderName_.clear();
     if (IsRecording()) { lastError_ = L"A recording is already running."; return false; }
     if (!LaunchEncoder(captureRect, outputPath, config)) return false;
-    Sleep(500);
+    Sleep(250);
     if (IsProcessAlive()) return true;
     CloseProcessHandles();
     if (lastError_.empty()) lastError_ = L"FFmpeg stopped immediately. The recording could not be started.";
@@ -153,9 +165,12 @@ bool Recorder::Screenshot(const RECT& captureRect, const std::wstring& outputPat
     std::filesystem::path out(outputPath); std::error_code ec;
     std::filesystem::create_directories(out.parent_path(), ec);
     std::wstringstream cmd;
-    cmd << Quote(ffmpeg) << L" -hide_banner -loglevel error -y -f lavfi -i "
-        << Quote(BuildCaptureInput(r, 1, true)) << L" -frames:v 1 -vf " << Quote(L"hwdownload,format=bgra,format=yuv420p")
-        << L" -q:v 2 -frames:v 1 " << Quote(out.wstring());
+    cmd << Quote(ffmpeg) << L" -hide_banner -loglevel error -y"
+        << L" -init_hw_device qsv=hw,child_device_type=d3d11va"
+        << L" -filter_hw_device hw"
+        << L" -f lavfi -i " << Quote(BuildCaptureInput(r, 1, true))
+        << L" -frames:v 1 -vf " << Quote(L"hwdownload,format=bgra")
+        << L" -pix_fmt bgra -update 1 " << Quote(out.wstring());
     if (!Launch(cmd.str())) return false;
     if (WaitForSingleObject(process_, 10000) != WAIT_OBJECT_0) {
         TerminateProcess(process_, 1); WaitForSingleObject(process_, 1000);
