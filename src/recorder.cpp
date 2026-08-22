@@ -26,15 +26,42 @@ std::wstring FindFfmpeg(std::wstring& detail) {
     return {};
 }
 
-std::wstring BuildCaptureInput(const RECT& r, int fps, bool cursor) {
+HWND FindMinecraftWindow() {
+    HWND found = nullptr;
+    EnumWindows([](HWND hwnd, LPARAM param) -> BOOL {
+        if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) return TRUE;
+        wchar_t title[512]{};
+        GetWindowTextW(hwnd, title, 511);
+        std::wstring s(title);
+        std::transform(s.begin(), s.end(), s.begin(), [](wchar_t c){ return std::towlower(c); });
+        if (s.find(L"minecraft") == std::wstring::npos) return TRUE;
+        *reinterpret_cast<HWND*>(param) = hwnd;
+        return FALSE;
+    }, reinterpret_cast<LPARAM>(&found));
+    return found;
+}
+
+bool SameRect(const RECT& a, const RECT& b) {
+    const int tolerance = 12;
+    return std::abs(a.left-b.left) <= tolerance && std::abs(a.top-b.top) <= tolerance &&
+           std::abs(a.right-b.right) <= tolerance && std::abs(a.bottom-b.bottom) <= tolerance;
+}
+
+std::wstring BuildMonitorInput(const RECT& r, int fps, bool cursor) {
     const int width = std::max(2L, r.right - r.left) & ~1;
     const int height = std::max(2L, r.bottom - r.top) & ~1;
     std::wstringstream s;
-    s << L"ddagrab=framerate=" << std::clamp(fps, 15, 120)
-      << L":draw_mouse=" << (cursor ? 1 : 0)
-      << L":dup_frames=1"
-      << L":video_size=" << width << L"x" << height
-      << L":offset_x=" << r.left << L":offset_y=" << r.top;
+    s << L"gfxcapture=monitor_idx=0:max_framerate=" << std::clamp(fps, 15, 120)
+      << L":capture_cursor=" << (cursor ? 1 : 0)
+      << L":width=" << width << L":height=" << height;
+    return s.str();
+}
+
+std::wstring BuildWindowInput(HWND hwnd, int fps, bool cursor) {
+    std::wstringstream s;
+    s << L"gfxcapture=hwnd=" << reinterpret_cast<uintptr_t>(hwnd)
+      << L":capture_cursor=" << (cursor ? 1 : 0)
+      << L":max_framerate=" << std::clamp(fps, 15, 120);
     return s.str();
 }
 
@@ -76,7 +103,7 @@ bool Recorder::Launch(const std::wstring& commandLine) {
     PROCESS_INFORMATION pi{};
     std::vector<wchar_t> buffer(commandLine.begin(), commandLine.end()); buffer.push_back(L'\0');
     const BOOL ok = CreateProcessW(nullptr, buffer.data(), nullptr, nullptr, TRUE,
-                                   CREATE_NO_WINDOW | NORMAL_PRIORITY_CLASS,
+                                   CREATE_NO_WINDOW | HIGH_PRIORITY_CLASS,
                                    nullptr, nullptr, &si, &pi);
     CloseHandle(stdinRead); CloseHandle(nulOut); CloseHandle(nulErr);
     if (!ok) {
@@ -107,12 +134,17 @@ bool Recorder::LaunchEncoder(const RECT& captureRect, const std::wstring& output
     if (ffmpeg.empty()) { lastError_ = detail; return false; }
 
     const int fps = std::clamp(config.fps, 15, 120);
-    const std::wstring input = BuildCaptureInput(r, fps, config.captureCursor);
+    HWND minecraft = FindMinecraftWindow();
+    RECT minecraftRect{};
+    const bool useWindowCapture = minecraft && GetWindowRect(minecraft, &minecraftRect) && SameRect(minecraftRect, r);
+    const std::wstring input = useWindowCapture
+        ? BuildWindowInput(minecraft, fps, config.captureCursor)
+        : BuildMonitorInput(r, fps, config.captureCursor);
 
-    // Dedicated recorder path: FFmpeg + DXGI Desktop Duplication capture +
-    // Intel Quick Sync H.264. ddagrab produces D3D11 hardware frames, so avoid
-    // the old hwmap round-trip and feed the hardware frames directly to QSV.
-    // This keeps the CPU out of the per-frame pixel-copy path.
+    // Windows Graphics Capture is used here instead of Desktop Duplication.
+    // WGC is designed to keep a window/display capture session alive across
+    // fullscreen and DWM/display mode transitions. The captured frames remain
+    // D3D11 hardware frames and can flow directly into Intel Quick Sync.
     std::wstringstream cmd;
     cmd << Quote(ffmpeg)
         << L" -hide_banner -loglevel error -y"
@@ -120,7 +152,9 @@ bool Recorder::LaunchEncoder(const RECT& captureRect, const std::wstring& output
         << L" -filter_hw_device hw"
         << L" -f lavfi -i " << Quote(input);
 
-    if (outputWidth != width || outputHeight != height) {
+    if (!useWindowCapture && (outputWidth != width || outputHeight != height)) {
+        cmd << L" -vf " << Quote(L"scale_qsv=w=" + std::to_wstring(outputWidth) + L":h=" + std::to_wstring(outputHeight));
+    } else if (useWindowCapture && (outputWidth != width || outputHeight != height)) {
         cmd << L" -vf " << Quote(L"scale_qsv=w=" + std::to_wstring(outputWidth) + L":h=" + std::to_wstring(outputHeight));
     }
 
@@ -134,7 +168,9 @@ bool Recorder::LaunchEncoder(const RECT& captureRect, const std::wstring& output
         << L" -movflags +faststart"
         << L" -f mp4 " << Quote(out.wstring());
 
-    encoderName_ = L"H.264 Intel Quick Sync + DXGI capture";
+    encoderName_ = useWindowCapture
+        ? L"H.264 Intel Quick Sync + Windows Graphics Capture"
+        : L"H.264 Intel Quick Sync + Windows Graphics Capture (monitor)";
     return Launch(cmd.str());
 }
 
@@ -148,7 +184,7 @@ bool Recorder::StartRegion(const RECT& captureRect, const std::wstring& outputPa
     lastError_.clear(); encoderName_.clear();
     if (IsRecording()) { lastError_ = L"A recording is already running."; return false; }
     if (!LaunchEncoder(captureRect, outputPath, config)) return false;
-    Sleep(250);
+    Sleep(500);
     if (IsProcessAlive()) return true;
     CloseProcessHandles();
     if (lastError_.empty()) lastError_ = L"FFmpeg stopped immediately. The recording could not be started.";
@@ -164,11 +200,15 @@ bool Recorder::Screenshot(const RECT& captureRect, const std::wstring& outputPat
     if (ffmpeg.empty()) { lastError_ = detail; return false; }
     std::filesystem::path out(outputPath); std::error_code ec;
     std::filesystem::create_directories(out.parent_path(), ec);
+    HWND minecraft = FindMinecraftWindow();
+    RECT mr{};
+    const bool useWindowCapture = minecraft && GetWindowRect(minecraft, &mr) && SameRect(mr, r);
+    const std::wstring input = useWindowCapture ? BuildWindowInput(minecraft, 1, true) : BuildMonitorInput(r, 1, true);
     std::wstringstream cmd;
     cmd << Quote(ffmpeg) << L" -hide_banner -loglevel error -y"
         << L" -init_hw_device qsv=hw,child_device_type=d3d11va"
         << L" -filter_hw_device hw"
-        << L" -f lavfi -i " << Quote(BuildCaptureInput(r, 1, true))
+        << L" -f lavfi -i " << Quote(input)
         << L" -frames:v 1 -vf " << Quote(L"hwdownload,format=bgra")
         << L" -pix_fmt bgra -update 1 " << Quote(out.wstring());
     if (!Launch(cmd.str())) return false;
