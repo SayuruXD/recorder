@@ -105,21 +105,24 @@ bool Recorder::LaunchEncoder(const RECT& captureRect, const std::wstring& output
     std::wstring detail; const std::wstring ffmpeg = FindFfmpeg(detail);
     if (ffmpeg.empty()) { lastError_ = detail; return false; }
 
+    // Keep the capture path on the GPU as long as possible. Quick Sync is a much
+    // better fit for low-end Intel CPUs than software x264. The fallback remains
+    // available for machines where the Intel encoder is unavailable.
     const std::wstring input = BuildCaptureInput(r, config.fps, config.captureCursor);
-    std::wstringstream videoFilter;
-    videoFilter << L"hwdownload,format=bgra";
+    std::wstringstream qsvFilter;
+    qsvFilter << L"hwmap=derive_device=qsv,format=qsv";
     if (outputWidth != width || outputHeight != height)
-        videoFilter << L",scale=" << outputWidth << L":" << outputHeight << L":flags=fast_bilinear";
-    videoFilter << L",format=yuv420p";
+        qsvFilter << L",scale_qsv=w=" << outputWidth << L":h=" << outputHeight;
 
     std::wstringstream cmd;
     cmd << Quote(ffmpeg) << L" -hide_banner -loglevel error -y -f lavfi -i " << Quote(input)
-        << L" -vf " << Quote(videoFilter.str()) << L" -an -r " << std::clamp(config.fps, 15, 60)
-        << L" -c:v libx264 -preset ultrafast -tune zerolatency"
-        << L" -crf " << std::clamp(config.quality + 2, 20, 32)
-        << L" -threads 2 -bf 0 -g " << std::clamp(config.fps * 2, 30, 120)
-        << L" -pix_fmt yuv420p -movflags +faststart -f mp4 " << Quote(out.wstring());
-    encoderName_ = L"H.264 compatibility mode";
+        << L" -vf " << Quote(qsvFilter.str())
+        << L" -an -fps_mode cfr -r " << std::clamp(config.fps, 15, 60)
+        << L" -c:v h264_qsv -preset veryfast -global_quality "
+        << std::clamp(config.quality + 4, 20, 32)
+        << L" -bf 0 -g " << std::clamp(config.fps * 2, 30, 120)
+        << L" -pix_fmt nv12 -movflags +faststart -f mp4 " << Quote(out.wstring());
+    encoderName_ = L"H.264 Intel Quick Sync";
     return Launch(cmd.str());
 }
 
