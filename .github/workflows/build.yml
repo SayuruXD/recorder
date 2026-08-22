@@ -24,6 +24,13 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path package | Out-Null
+          # Keep the background beside Recorder.exe. This avoids asset-path problems
+          # when the portable ZIP is extracted anywhere on Windows.
+          $main = Get-Content src/main.cpp -Raw
+          $main = $main.Replace('(std::filesystem::path(ModuleDir())/L"assets"/L"minecraft_bg.jpg").wstring()', '(std::filesystem::path(ModuleDir())/L"minecraft_bg.jpg").wstring()')
+          Set-Content src/main.cpp $main -Encoding UTF8
+          # Rebuild after the portable-path fix.
+          cmake --build build --config Release --parallel
           Copy-Item build/Release/Recorder.exe package/Recorder.exe
           Copy-Item assets/minecraft_bg.jpg package/minecraft_bg.jpg
           Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ffmpeg.zip
@@ -34,7 +41,7 @@ jobs:
           $filters = & $ffmpeg.FullName -hide_banner -filters 2>&1 | Out-String
           if ($filters -notmatch 'ddagrab') { throw 'Bundled FFmpeg does not contain ddagrab.' }
           $encoders = & $ffmpeg.FullName -hide_banner -encoders 2>&1 | Out-String
-          if ($encoders -notmatch 'h264_qsv') { Write-Warning 'FFmpeg build does not list h264_qsv; recorder will need its software fallback.' }
+          if ($encoders -notmatch 'h264_qsv') { Write-Warning 'FFmpeg build does not list h264_qsv.' }
           @"
           Recorder portable package
           Keep Recorder.exe, ffmpeg.exe and minecraft_bg.jpg together.
