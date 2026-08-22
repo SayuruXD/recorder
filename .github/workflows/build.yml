@@ -24,9 +24,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path package | Out-Null
-          New-Item -ItemType Directory -Force -Path package/assets | Out-Null
           Copy-Item build/Release/Recorder.exe package/Recorder.exe
-          Copy-Item assets/minecraft_bg.jpg package/assets/minecraft_bg.jpg
+          Copy-Item assets/minecraft_bg.jpg package/minecraft_bg.jpg
           Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ffmpeg.zip
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-extracted -Force
           $ffmpeg = Get-ChildItem ffmpeg-extracted -Recurse -Filter ffmpeg.exe | Select-Object -First 1
@@ -34,9 +33,11 @@ jobs:
           Copy-Item $ffmpeg.FullName package/ffmpeg.exe
           $filters = & $ffmpeg.FullName -hide_banner -filters 2>&1 | Out-String
           if ($filters -notmatch 'ddagrab') { throw 'Bundled FFmpeg does not contain ddagrab.' }
+          $encoders = & $ffmpeg.FullName -hide_banner -encoders 2>&1 | Out-String
+          if ($encoders -notmatch 'h264_qsv') { Write-Warning 'FFmpeg build does not list h264_qsv; recorder will need its software fallback.' }
           @"
           Recorder portable package
-          Keep Recorder.exe, ffmpeg.exe and the assets folder together.
+          Keep Recorder.exe, ffmpeg.exe and minecraft_bg.jpg together.
           Start Minecraft, open Recorder, then press F8.
           Default: low-end 720p at 30 FPS.
           Recordings: Documents\Recorder
