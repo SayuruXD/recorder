@@ -1,6 +1,8 @@
 #include "recorder.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cwctype>
 #include <filesystem>
 #include <sstream>
 #include <vector>
@@ -33,7 +35,7 @@ HWND FindMinecraftWindow() {
         wchar_t title[512]{};
         GetWindowTextW(hwnd, title, 511);
         std::wstring s(title);
-        std::transform(s.begin(), s.end(), s.begin(), [](wchar_t c){ return std::towlower(c); });
+        std::transform(s.begin(), s.end(), s.begin(), [](wchar_t c){ return static_cast<wchar_t>(std::towlower(c)); });
         if (s.find(L"minecraft") == std::wstring::npos) return TRUE;
         *reinterpret_cast<HWND*>(param) = hwnd;
         return FALSE;
@@ -141,10 +143,6 @@ bool Recorder::LaunchEncoder(const RECT& captureRect, const std::wstring& output
         ? BuildWindowInput(minecraft, fps, config.captureCursor)
         : BuildMonitorInput(r, fps, config.captureCursor);
 
-    // Windows Graphics Capture is used here instead of Desktop Duplication.
-    // WGC is designed to keep a window/display capture session alive across
-    // fullscreen and DWM/display mode transitions. The captured frames remain
-    // D3D11 hardware frames and can flow directly into Intel Quick Sync.
     std::wstringstream cmd;
     cmd << Quote(ffmpeg)
         << L" -hide_banner -loglevel error -y"
@@ -152,20 +150,14 @@ bool Recorder::LaunchEncoder(const RECT& captureRect, const std::wstring& output
         << L" -filter_hw_device hw"
         << L" -f lavfi -i " << Quote(input);
 
-    if (!useWindowCapture && (outputWidth != width || outputHeight != height)) {
+    if (outputWidth != width || outputHeight != height)
         cmd << L" -vf " << Quote(L"scale_qsv=w=" + std::to_wstring(outputWidth) + L":h=" + std::to_wstring(outputHeight));
-    } else if (useWindowCapture && (outputWidth != width || outputHeight != height)) {
-        cmd << L" -vf " << Quote(L"scale_qsv=w=" + std::to_wstring(outputWidth) + L":h=" + std::to_wstring(outputHeight));
-    }
 
     cmd << L" -an -fps_mode cfr -r " << fps
-        << L" -c:v h264_qsv"
-        << L" -preset veryfast"
+        << L" -c:v h264_qsv -preset veryfast"
         << L" -global_quality " << std::clamp(config.quality, 18, 28)
-        << L" -bf 0"
-        << L" -g " << std::clamp(fps * 2, 30, 240)
-        << L" -pix_fmt nv12"
-        << L" -movflags +faststart"
+        << L" -bf 0 -g " << std::clamp(fps * 2, 30, 240)
+        << L" -pix_fmt nv12 -movflags +faststart"
         << L" -f mp4 " << Quote(out.wstring());
 
     encoderName_ = useWindowCapture
