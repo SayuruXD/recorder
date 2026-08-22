@@ -24,42 +24,32 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path package | Out-Null
-
-          # Portable UI/runtime fixes are applied before the final rebuild.
+          # Keep the background beside Recorder.exe. This avoids asset-path problems
+          # when the portable ZIP is extracted anywhere on Windows.
           $main = Get-Content src/main.cpp -Raw
           $main = $main.Replace('(std::filesystem::path(ModuleDir())/L"assets"/L"minecraft_bg.jpg").wstring()', '(std::filesystem::path(ModuleDir())/L"minecraft_bg.jpg").wstring()')
-          $main = $main.Replace('std::clamp(c.fps, 15, 60)', 'std::clamp(c.fps, 15, 120)')
-          $main = $main.Replace('for(auto s:{L"30",L"60"})', 'for(auto s:{L"30",L"60",L"120"})')
-          $main = $main.Replace('L"Default: low-end 720p at 30 FPS."', 'L"Default: low-end 720p at 30 FPS. Supports 30 / 60 / 120 FPS when the display and hardware can sustain it."')
           Set-Content src/main.cpp $main -Encoding UTF8
-
-          # Rebuild after the final recorder/UI changes.
+          # Rebuild after the portable-path fix.
           cmake --build build --config Release --parallel
           Copy-Item build/Release/Recorder.exe package/Recorder.exe
           Copy-Item assets/minecraft_bg.jpg package/minecraft_bg.jpg
-
           Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ffmpeg.zip
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-extracted -Force
           $ffmpeg = Get-ChildItem ffmpeg-extracted -Recurse -Filter ffmpeg.exe | Select-Object -First 1
           if (-not $ffmpeg) { throw 'Bundled FFmpeg executable was not found.' }
           Copy-Item $ffmpeg.FullName package/ffmpeg.exe
-
           $filters = & $ffmpeg.FullName -hide_banner -filters 2>&1 | Out-String
-          if ($filters -notmatch 'ddagrab') { throw 'Bundled FFmpeg does not contain ddagrab.' }
+          if ($filters -notmatch 'gfxcapture') { throw 'Bundled FFmpeg does not contain gfxcapture. FFmpeg 8.1+ is required.' }
           $encoders = & $ffmpeg.FullName -hide_banner -encoders 2>&1 | Out-String
           if ($encoders -notmatch 'h264_qsv') { Write-Warning 'FFmpeg build does not list h264_qsv.' }
-
           @"
           Recorder portable package
-          Dedicated screen recorder, not Windows Recorder.
-          Capture: DXGI Desktop Duplication (ddagrab)
-          Encoder: Intel Quick Sync H.264 when supported
-          FPS: 30 / 60 / 120 (120 depends on display/GPU capture capability)
           Keep Recorder.exe, ffmpeg.exe and minecraft_bg.jpg together.
           Start Minecraft, open Recorder, then press F8.
+          Default: low-end 720p at 30 FPS.
           Recordings: Documents\Recorder
+          Capture: Windows Graphics Capture + Intel Quick Sync
           "@ | Set-Content package/README.txt
-
           Compress-Archive -Path package/* -DestinationPath Recorder-windows-x64.zip -Force
 
       - name: Upload one download
